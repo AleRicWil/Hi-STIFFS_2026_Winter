@@ -1,0 +1,11 @@
+{
+    "configuration": "ICB Sensor Testing",
+    "pvc_stiffness": "100mm-01_halfbridge_TPU",
+    "height": 90.0,
+    "yaw": 15.0,
+    "pitch": 0.0,
+    "roll": 0.0,
+    "rate_of_travel": 25.0,
+    "angle_of_travel": 0.0,
+    "offset_distance": 6.4
+}
