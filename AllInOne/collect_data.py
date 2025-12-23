@@ -215,8 +215,8 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.status_queue = status_queue
 
         # Load calibration coefficients
-        cal_csv_path = r'AllInOne\calibration_history.csv'
-        acc_csv_path = r'AllInOne\accel_calibration_history.csv'
+        cal_csv_path = r'Hi-STIFFS_2026_Winter\AllInOne\calibration_history.csv'
+        acc_csv_path = r'Hi-STIFFS_2026_Winter\AllInOne\accel_calibration_history.csv'
         try:
             cal_data = pd.read_csv(cal_csv_path)
             latest_cal = cal_data.iloc[-1]
@@ -265,7 +265,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
                 break
 
         # Create parent folder based on date
-        parent_folder = os.path.join('Raw Data', f'{config["date"]}')
+        parent_folder = os.path.join(r'Hi-STIFFS_2026_Winter\Raw Data', f'{config["date"]}')
         os.makedirs(parent_folder, exist_ok=True)
 
         # Open CSV file in the parent folder

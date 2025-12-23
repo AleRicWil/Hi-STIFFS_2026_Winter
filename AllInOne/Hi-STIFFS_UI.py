@@ -76,7 +76,7 @@ class HardwareControlUI:
 
     def load_config(self):
         """Load last_config from config.json if it exists."""
-        config_path = os.path.join('AllInOne', 'config.json')
+        config_path = os.path.join(r'Hi-STIFFS_2026_Winter\AllInOne', 'config.json')
         try:
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
@@ -90,9 +90,9 @@ class HardwareControlUI:
 
     def save_config(self):
         """Save last_config to config.json."""
-        config_path = os.path.join('AllInOne', 'config.json')
+        config_path = os.path.join(r'Hi-STIFFS_2026_Winter\AllInOne', 'config.json')
         try:
-            os.makedirs('AllInOne', exist_ok=True)
+            os.makedirs(r'Hi-STIFFS_2026_Winter\AllInOne', exist_ok=True)
             with open(config_path, 'w') as f:
                 json.dump(self.last_config, f, indent=4)
         except Exception as e:
@@ -440,7 +440,7 @@ class HardwareControlUI:
         self.cal_status_var.set(f"Status: Coefficients calculated:\n{self.calibration_coeff}")
 
         # Create AllInOne folder
-        parent_folder = 'AllInOne'
+        parent_folder = r'Hi-STIFFS_2026_Winter\AllInOne'
         os.makedirs(parent_folder, exist_ok=True)
 
         # Path for calibration history CSV

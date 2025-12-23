@@ -207,7 +207,7 @@ class LabStalkRow:
         self.stitch_gap_limit = 80  # if two good segments are close together, stitch into one segment (including the gap)
 
         # Results folder
-        parent_folder = r'Results'
+        parent_folder = r'Hi-STIFFS_2026_Winter\Results'
         os.makedirs(parent_folder, exist_ok=True)   # create the folder if it doesn't already exist
         self.results_path = os.path.join(parent_folder, r'results.csv')   # one file to store all results from all dates/sections
             # these are used to find the file, and written alongside the results in the results file
@@ -215,7 +215,7 @@ class LabStalkRow:
         self.test_num = test_num
 
         # Load data and stored calibration from data collection CSV header
-        self.csv_path = rf'Raw Data\{date}\{date}_test_{test_num}.csv'
+        self.csv_path = rf'Hi-STIFFS_2026_Winter\Raw Data\{date}\{date}_test_{test_num}.csv'
         if not os.path.exists(self.csv_path):
             self.exist = False
             return
@@ -554,23 +554,15 @@ class LabStalkRow:
         plt.tight_layout()
 
     def plot_raw_strain(self):
-        fig, axs = plt.subplots(2, 2, sharex=True, sharey=True, figsize=(8, 6))
-        axs[0, 0].plot(self.time, self.strain_1_raw, linewidth=0.3)
-        axs[0, 0].plot(self.time, self.strain_1, label='A1')
-        axs[0, 0].axhline(self.strain_1_ini, c='red', linewidth=0.5)
-        axs[0, 0].legend()
-        axs[0, 1].plot(self.time, self.strain_2_raw, linewidth=0.3)
-        axs[0, 1].plot(self.time, self.strain_2, label='A2')
-        axs[0, 1].axhline(self.strain_2_ini, c='red', linewidth=0.5)
-        axs[0, 1].legend()
-        axs[1, 0].plot(self.time, self.strain_B1_raw, linewidth=0.3)
-        axs[1, 0].plot(self.time, self.strain_B1, label='B1')
-        axs[1, 0].axhline(self.strain_B1_ini, c='red', linewidth=0.5)
-        axs[1, 0].legend()
-        axs[1, 1].plot(self.time, self.strain_B2_raw, linewidth=0.3)
-        axs[1, 1].plot(self.time, self.strain_B2, label='B2')
-        axs[1, 1].axhline(self.strain_B2_ini, c='red', linewidth=0.5)
-        axs[1, 1].legend()
+        fig, axs = plt.subplots(2, 1, sharex=True, figsize=(8, 6))
+        axs[0].plot(self.time, self.strain_1_raw, linewidth=0.3)
+        axs[0].plot(self.time, self.strain_1, label='A1')
+        axs[0].axhline(self.strain_1_ini, c='red', linewidth=0.5)
+        axs[0].legend()
+        axs[1].plot(self.time, self.strain_2_raw, linewidth=0.3)
+        axs[1].plot(self.time, self.strain_2, label='A2')
+        axs[1].axhline(self.strain_2_ini, c='red', linewidth=0.5)
+        axs[1].legend()
         plt.tight_layout()
 
         # if self.accel_flag:
@@ -694,7 +686,7 @@ class LabStalkRow:
             csvwriter.writerow(row)
 
     def calc_angles(self):
-        cal_csv_path = r'AllInOne\accel_calibration_history.csv'
+        cal_csv_path = r'Hi-STIFFS_2026_Winter\AllInOne\accel_calibration_history.csv'
         cal_data = pd.read_csv(cal_csv_path)
         latest_cal = cal_data.iloc[-1]
 
@@ -896,7 +888,7 @@ def show_force_position(dates, test_nums, show_accels=False):
             if test.exist:
                 test.smooth_raw_data()
                 test.shift_initials(time_cutoff=1.0)
-                test.correct_linear_drift()
+                # test.correct_linear_drift()
                 test.calc_force_position()
                 test.differentiate_force_position()
                 test.differentiate_force_position_DT()
@@ -1001,7 +993,7 @@ if __name__ == "__main__":
     '''Batch run of same configuration'''
     # for i in range(1, 15+1):
     #     process_data(date='08_13', test_num=f'{i}', view=True, overwrite=True)
-    show_force_position(dates=['12_20'], test_nums=[10])
+    show_force_position(dates=['12_20'], test_nums=[11])
 
     # boxplot_data(rodney_config='Integrated Beam Prototype 1', date='07_03', plot_num=104)
     # boxplot_data(rodney_config='Integrated Beam Prototype 2', date='07_10', plot_num=105)

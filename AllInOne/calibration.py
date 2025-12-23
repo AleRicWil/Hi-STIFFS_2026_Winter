@@ -21,7 +21,7 @@ def run_calibration(port, config, status_queue):
         config (dict): Configuration dictionary with calibration parameters.
         status_queue (Queue): Queue to send status messages to the UI.
     """
-    parent_folder = os.path.join('Raw Data', f'{config["date"]}')
+    parent_folder = os.path.join(r'Hi-STIFFS_2026_Winter\Raw Data', f'{config["date"]}')
     os.makedirs(parent_folder, exist_ok=True)
     summary_path = os.path.join(parent_folder, f'{config["date"]}_calibration_summary.csv')
     summary_data = []
@@ -341,7 +341,7 @@ def run_accel_calibration(port, config, status_queue):
         config (dict): Configuration dictionary with calibration parameters.
         status_queue (Queue): Queue to send status messages to the UI.
     """
-    parent_folder = os.path.join('Raw Data', f'{config["date"]}')
+    parent_folder = os.path.join(r'Hi-STIFFS_2026_Winter\Raw Data', f'{config["date"]}')
     os.makedirs(parent_folder, exist_ok=True)
     csv_path = os.path.join(parent_folder, f'{config["date"]}_accel_calibration.csv')
 
@@ -435,7 +435,7 @@ def run_accel_calibration(port, config, status_queue):
     offsets, gains = compute_accel_calibration(measurements, status_queue)
 
     # Save results
-    parent_folder = r'AllInOne'
+    parent_folder = r'Hi-STIFFS_2026_Winter\AllInOne'
     os.makedirs(parent_folder, exist_ok=True)
     summary_path = os.path.join(parent_folder, 'accel_calibration_history.csv')
     with open(summary_path, 'w', newline='') as summaryfile:
