@@ -1,5 +1,5 @@
 {
-    "configuration": "ICB Sensor Testing",
+    "configuration": "ICB Sensor Testing - ADS1120",
     "pvc_stiffness": "120mm-01_halfbridge_metal",
     "height": 90.0,
     "yaw": 15.0,
