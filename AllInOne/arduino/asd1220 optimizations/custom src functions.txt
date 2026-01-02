@@ -1,0 +1,32 @@
+From Protocentral_ADS1220.cpp.
+Changes satics byte to byte to prevent long-term storage and potential overwriting if called by two threads simultaneously
+Adds SPI_SETTINGS to regulate/sync communication timing
+Reduces delays from 100 to 1 mircroseconds
+Adds better comments
+
+int32_t Protocentral_ADS1220::Read_Data_Samples()
+{
+    byte SPI_Buff[3];  // Local buffer to avoid static if not needed
+    int32_t mResult32 = 0;
+    long int bit24;
+
+    SPI.beginTransaction(SPI_SETTINGS);
+    digitalWrite(m_cs_pin, LOW);
+    delayMicroseconds(1);
+    for (int i = 0; i < 3; i++)
+    {
+        SPI_Buff[i] = SPI.transfer(0);  // Send 0x00 as dummy byte (per datasheet recommendation)
+    }
+    delayMicroseconds(1);
+    digitalWrite(m_cs_pin, HIGH);
+    SPI.endTransaction();
+
+    bit24 = SPI_Buff[0];
+    bit24 = (bit24 << 8) | SPI_Buff[1];
+    bit24 = (bit24 << 8) | SPI_Buff[2];  // Assemble 24-bit value
+
+    bit24 = (bit24 << 8);  // Left-shift to prepare for sign extension
+    mResult32 = (bit24 >> 8);  // Arithmetic right-shift for two's complement sign extension
+
+    return mResult32;
+}

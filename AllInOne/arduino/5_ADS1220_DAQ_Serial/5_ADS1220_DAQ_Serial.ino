@@ -149,9 +149,10 @@ void setup() {
     adcs[i].set_OperationMode(MODE_TURBO);
 
     // Set data rate to 350 SPS in turbo (175 Hz per channel with muxing)
-    adcs[i].set_data_rate(DR_175SPS);
+    adcs[i].set_data_rate(DR_90SPS);
 
     // Set gain (matches example)
+    adcs[i].PGA_ON();
     adcs[i].set_pga_gain(PGA_GAIN_128);
 
     // Set external reference for ratiometric measurement

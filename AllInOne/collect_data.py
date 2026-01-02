@@ -25,7 +25,7 @@ VOLTS_PER_LSB = VREF / (ADS1220_PGA_GAIN * TWO_TO_23)
 # - Force/position calculations use the original Volt values — never altered
 
 # === Plotting parameters ===
-PLOT_REFRESH_HZ = 60  # Refresh rate for plot updates in Hz; start at 60, test up to 120 if stable
+PLOT_REFRESH_HZ = 30  # Refresh rate for plot updates in Hz; start at 60, test up to 120 if stable
 
 class SerialReader(QtCore.QThread):
     """Thread for reading serial data, processing, and writing to CSV."""
@@ -41,6 +41,7 @@ class SerialReader(QtCore.QThread):
         self.ser = ser
         self.csvfile = csvfile
         self.csvwriter = csvwriter
+        self.num_sensors = 1
         self.k_A1 = k_A1
         self.d_A1 = d_A1
         self.c_A1 = c_A1
@@ -74,9 +75,9 @@ class SerialReader(QtCore.QThread):
                 self.status_signal.emit(f"Reset at {reset_time}")
                 continue
             data = line.split(',')
-            expected_len = 6  # For two sensors: tsA, A1, A2, tsB, B1, B2
+            expected_len = self.num_sensors*3  # For two sensors: tsA, A1, A2, tsB, B1, B2
             if len(data) < expected_len:
-                self.status_signal.emit("Invalid data packet")
+                self.status_signal.emit(f"Invalid data packet for {self.num_sensors} sensors")
                 continue
             try:
                 time_A_sec = float(data[0])
