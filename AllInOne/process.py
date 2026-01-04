@@ -264,6 +264,7 @@ class LabStalkRow:
             data = pd.read_csv(f)   # load the CSV with pandas from where the reader object left off. Must be done within 'with open() as f:' scope
 
             # store each column by its title and covert the pandas object to a numpy array
+        
         self.time = data['Time'].to_numpy()
         self.strain_1 = self.strain_1_raw = data['Strain A1'].to_numpy()    # CSV labels as A1/A2 for backwards compatability with 4 channel sensors. This code
         self.strain_2 = self.strain_2_raw = data['Strain A2'].to_numpy() 
@@ -734,6 +735,7 @@ class LabStalkRow:
         ax[1].axhline(1, c='red', linewidth=0.3)
         ax[1].axhline(0, c='red', linewidth=0.3)
         ax[1].axhline(-1, c='red', linewidth=0.3)
+
 
 def boxplot_data(rodney_config, date=None, stalk_type=None, plot_num=20, offset=None, height=None):
     results_df = pd.read_csv(r'Results\results.csv')
