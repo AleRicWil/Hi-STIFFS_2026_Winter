@@ -61,8 +61,9 @@ class DataReceiverWriter(QtCore.QThread):
 
         print(f"Writing metadata to CSV...")
         self.csvwriter.writerow(['===BEGIN_METADATA==='])
-        for s in self.sensor_labels:
-            header_content += [f"ICB-Sensor {s}'s Latest Calibration: N/A, kA1: 1.0, dA1: 1.0, cA1: 1.0, kA2: 1.0, dA2: 1.0, cA2: 1.0"]
+        for l in self.sensor_labels:
+            header_content.insert(0, f'Test Name: {date_str}_test_{time_str}, yyyy-mm-dd_test_hhmmss')
+            header_content += [f"ICB-Sensor {l}'s Latest Calibration: N/A, k{l}1: 1.0, d{l}1: 1.0, c{l}1: 1.0, k{l}2: 1.0, d{l}2: 1.0, c{l}2: 1.0"]
         for row in header_content:
             row = row.split(', ')
             self.csvwriter.writerow(row)
@@ -71,11 +72,11 @@ class DataReceiverWriter(QtCore.QThread):
 
         print(f"Writing data headers to CSV...")
         data_headers = []
-        for s in self.sensor_labels:
+        for l in self.sensor_labels:
             if save_format == 'volts':
-                data_headers += [f'Time_{s}_sec', f'Strain_{s}1_V', f'Strain_{s}2_V']
+                data_headers += [f'Time_{l}_sec', f'Strain_{l}1_V', f'Strain_{l}2_V']
             else:
-                data_headers += [f'Time_{s}_sec', f'Strain_{s}1_raw', f'Strain_{s}2_raw']
+                data_headers += [f'Time_{l}_sec', f'Strain_{l}1_raw', f'Strain_{l}2_raw']
         data_headers += ['Processed_Time']
         self.csvwriter.writerow(data_headers)
 
@@ -399,14 +400,14 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Data collection from WiFi stream")
     parser.add_argument('--save-format', choices=['volts', 'raw'], default='raw', help="Format to save strains in CSV: volts or raw")
     parser.add_argument('--plot', type=bool, default=True, help="Enable live plotting")
-    parser.add_argument('--sensors', default='A', help="Number of sensors (1-5) or comma-separated labels (e.g., 'A,C,E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
+    parser.add_argument('--sensors', default='B', help="Number of sensors (1-5) or comma-separated labels (e.g., 'A,C,E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
     args = parser.parse_args()
 
     my_header_content = [
         "Test Type: Force Cycle, Force: 20N, Cycles: 66, Dwell Time: 1sec, Tool Accuracy: +/-0.05N",
-        "Test Number in Session: 01, Time since Last Test: >24hr",
-        "Number of ICB-Sensors: 1, Sensor Label(s): A",
-        "ICB-Sensor A's Serial#: 001, Length: 100mm, Spacing: 40mm, Saturation Load: 70N, Factor of Safety at Saturation: 1.5",
+        "Test Number in Session: 10, Time since Last Test: ~10min",
+        f"Number of ICB-Sensors: 1, Sensor Label(s): {args.sensors}",
+        "ICB-Sensor B's Serial#: 002, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_90SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"]
     run_collection(args.save_format, args.plot, args.sensors, my_header_content)
