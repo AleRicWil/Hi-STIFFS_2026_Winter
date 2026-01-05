@@ -24,11 +24,12 @@ HEADER_MARKER = r'===END_METADATA==='
 DATA_MARKER = r'===BEGIN_DATA==='
 
 class HiSTIFFSData:
-    def __init__(self, date, time, debug=False):
+    def __init__(self, date, time, debug=False, base=RAW_DATA_BASE):
         # Form CSV path
+        # Note: Using os.path.join ensures cross-platform compatibility for path construction on Windows, Linux, and Raspberry Pi.
         self.date = date
         self.time = time
-        self.data_csv_path = os.path.join(RAW_DATA_BASE, rf"{date}\{date}_test_{time}.csv")
+        self.data_csv_path = os.path.join(base, date, f"{date}_test_{time}.csv")
         if not os.path.exists(self.data_csv_path):
             self.exists = False
             print(f"No such data file at: {self.data_csv_path}")
@@ -126,7 +127,8 @@ class HiSTIFFSData:
                 raise ValueError("Error while parsing metadata")
 
             # Load sensor data
-            data = pd.read_csv(f)
+            # Note: Using skiprows ensures we read only the data section, cross-platform compatible with pandas.
+            data = pd.read_csv(self.data_csv_path, skiprows=data_index + 1)
 
         # Re-pack all data in appropriate data-types
         for l in self.sensor_labels:
@@ -145,7 +147,7 @@ class HiSTIFFSData:
         hh = split_colons[0].astype(np.int64)
         mm = split_colons[1].astype(np.int64)
         ss = split_seconds[0].astype(np.int64)
-        us = split_seconds[0].astype(np.int64)
+        us = split_seconds[1].astype(np.int64)
         processed_time = (hh*np.timedelta64(1,'h') + mm*np.timedelta64(1, 'm')
                            + ss*np.timedelta64(1, 's') + us*np.timedelta64(1, 'us'))
         self.data_dict['Processed Time'] = processed_time.to_numpy(dtype='timedelta64[us]')
@@ -171,13 +173,15 @@ class HiSTIFFSData:
             self.data_dict[f'Sensor_{l}']['strain_1_filter'] = savgol_filter(s['strain_1_raw'], window, order)
             self.data_dict[f'Sensor_{l}']['strain_2_filter'] = savgol_filter(s['strain_2_raw'], window, order)
 
-    def plot_raw_strains(self, sensors='A,B,C,D,E'):
+    def plot_raw_strains(self, sensors='A,B,C,D,E', return_figs=False):
         sensors_to_plot = sensors.split(',')
 
         removed = [label for label in sensors_to_plot if label not in self.sensor_labels]
         for label in removed:
             print(f"Sensor {label} not in CSV data")
         sensors_to_plot = [label for label in sensors_to_plot if label in self.sensor_labels]
+
+        figs = []  # List to collect figures for optional return
 
         for i, l in enumerate(sensors_to_plot):
             s = self.data_dict[f'Sensor_{l}']
@@ -192,7 +196,7 @@ class HiSTIFFSData:
             ax[0].axhline(s['ini_1'], c='red', linewidth=0.2)
             ax[0].axhline(s['end_1'], c='green', linewidth=0.2)
             ax[0].set_xlabel('Time (s)')
-            ax[0].set_ylabel(r'ADC Integer Value ($+/-2^{23}$)')
+            ax[0].set_ylabel(r'ADC Integer Value ($\pm 2^{23}$)')
             ax[0].yaxis.set_major_formatter(StrMethodFormatter('{x:,}'))
             ax[0].legend(loc='upper right')
 
@@ -209,6 +213,10 @@ class HiSTIFFSData:
                          f'Test # in Session: {self.test_number}. '+
                          f'Pre-rest Time: {self.test_rest}')
             fig.tight_layout()
+            figs.append(fig)  # Collect figure for return if requested
+
+        if return_figs:
+            return figs
 
 
 if __name__ == "__main__":
