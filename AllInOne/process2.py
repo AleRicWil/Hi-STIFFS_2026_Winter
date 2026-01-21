@@ -17,9 +17,9 @@ from matplotlib.ticker import StrMethodFormatter
 from scipy.signal import savgol_filter
 
 # Hardcoded paths (adjust as needed for your environment)
-CALIBRATION_PATH = r'Hi-STIFFS_2026_Winter\AllInOne\calibration_history.csv'
-RAW_DATA_BASE = r'Hi-STIFFS_2026_Winter\Raw Data'
-RESULTS_BASE = r'Hi-STIFFS_2026_Winter\Results'
+CALIBRATION_PATH = r'Hi-STIFFS_2026_Winter/AllInOne/calibration_history.csv'
+RAW_DATA_BASE = r'Hi-STIFFS_2026_Winter/Raw Data'
+RESULTS_BASE = r'Hi-STIFFS_2026_Winter/Results'
 HEADER_MARKER = r'===END_METADATA==='
 DATA_MARKER = r'===BEGIN_DATA==='
 

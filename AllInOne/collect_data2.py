@@ -24,7 +24,6 @@ PLOT_REFRESH_HZ = 30  # Refresh rate for plot updates in Hz
 WIFI_IP = "192.168.4.1"
 WIFI_PORT = 80
 WIFI_URL = f"http://{WIFI_IP}:{WIFI_PORT}/"
-
 # Hardcoded paths (adjust as needed for your environment)
 CALIBRATION_PATH = r'Hi-STIFFS_2026_Winter\AllInOne\calibration_history.csv'
 RAW_DATA_BASE = r'Hi-STIFFS_2026_Winter\Raw Data'
@@ -306,11 +305,11 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
             strain2 = strains2[i]
 
             # Calculate force and position
-            force = (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i])) / (self.k1[i] * self.k2[i] * (self.d2[i] - self.d1[i]))
-            num = (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
-            den = (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
-            position = num / den if abs(den) > 2.5e-5 else 0.0
-            position = 0.0 if position > 0.25 or position < -0.10 else position
+            force = 0# (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i])) / (self.k1[i] * self.k2[i] * (self.d2[i] - self.d1[i]))
+            num = 0# (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
+            den = 0# (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
+            position = 0# num / den if abs(den) > 2.5e-5 else 0.0
+            position = 0# 0.0 if position > 0.25 or position < -0.10 else position
 
             self.times[i].append(time_sec)
             self.strains1[i].append(strain1 * 1000.0)  # mV for display
@@ -400,10 +399,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Data collection from WiFi stream")
     parser.add_argument('--save-format', choices=['volts', 'raw'], default='raw', help="Format to save strains in CSV: volts or raw")
     parser.add_argument('--plot', type=bool, default=True, help="Enable live plotting")
-    parser.add_argument('--sensors', default='B', help="Number of sensors (1-5) or comma-separated labels (e.g., 'A,C,E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
+    parser.add_argument('--sensors', default='A', help="Number of sensors (1-5) or comma-separated labels (e.g., 'A,C,E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
     args = parser.parse_args()
 
     my_header_content = [
+        "Thow-away trial run. Not real data"
         "Test Type: Force Cycle, Force: 20N, Cycles: 66, Dwell Time: 1sec, Tool Accuracy: +/-0.05N",
         "Test Number in Session: 10, Time since Last Test: ~10min",
         f"Number of ICB-Sensors: 1, Sensor Label(s): {args.sensors}",
