@@ -1,0 +1,10 @@
+===BEGIN_METADATA===
+Test Type: Force Cycle
+Test Number in Session: 0,Time since Last Test: 
+Number of ICB-Sensors: 1,Sensor Label(s): A
+ICB-Sensor A's Serial#: 001,Length (mm): 100,Spacing (mm): 40,Saturation Load (N): 80,Microstrain at Saturation: 2500
+Analog-to-Digital Converter: ADS1220,Mode: Turbo,Data Rate: DR_90SPS,Analog Excitation/Reference Voltage: 5.1V +/-2mV
+DAQ Microcontroller: Arduino Nano ESP32,ID: Hi-STIFFS_Nano,CPU Clock: 240MHz,Cores: 2,Data-stream Connection: Wi-Fi
+===END_METADATA===
+===BEGIN_DATA===
+Time_A_sec,Strain_A1_raw,Strain_A2_raw,Processed_Time

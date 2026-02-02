@@ -18,6 +18,7 @@ from PyQt5.QtWidgets import *  # Imports all widgets for concise usage (as per u
 from PyQt5.QtGui import QPalette, QColor, QFont
 from PyQt5.QtCore import Qt
 from process2 import HiSTIFFSData, RAW_DATA_BASE
+import collect_data2 as cd  # Import at top for cross-platform module access via PyQt5/Python
 
 SETTINGS_FILE = 'Cross-Platform_GUI_Settings.json'  # File for storing user preferences, cross-platform compatible via JSON.
 
@@ -43,6 +44,20 @@ class SettingsDialog(QDialog):
         self.screen_width_spinbox.setSingleStep(100)
         layout.addRow("Screen Width Override:", self.screen_width_spinbox)
 
+        # New: Hardware config for ADC and DAQ (editable lines for last two header rows)
+        self.adc_config_edit = QLineEdit()
+        layout.addRow("ADC Config:", self.adc_config_edit)
+        self.daq_config_edit = QLineEdit()
+        layout.addRow("DAQ Config:", self.daq_config_edit)
+
+        # New: Sensor list editor (QTableWidget for editing sensors)
+        self.sensor_table = QTableWidget(0, 6)  # Columns: SN, Label, Length, Spacing, Saturation Load, Saturation Microstrain
+        self.sensor_table.setHorizontalHeaderLabels(["Serial#", "Default Label", "Length (mm)", "Spacing (mm)", "Sat. Load (N)", "Sat. Microstrain"])
+        layout.addRow("Sensors:", self.sensor_table)
+        add_sensor_btn = QPushButton("Add Sensor")
+        add_sensor_btn.clicked.connect(self.add_sensor_row)
+        layout.addRow(add_sensor_btn)
+
         # Dialog buttons for save/cancel, standard Qt behavior.
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
@@ -54,11 +69,240 @@ class SettingsDialog(QDialog):
         self.independent_plots_checkbox.setChecked(settings.get('independent_plots', False))
         self.detect_screen_size_checkbox.setChecked(settings.get('detect_screen_size', True))
         self.screen_width_spinbox.setValue(settings.get('screen_width', 1920))
+        self.adc_config_edit.setText(settings.get('adc_config', "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_90SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV"))
+        self.daq_config_edit.setText(settings.get('daq_config', "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"))
+        self.load_sensors(settings.get('sensors', []))
 
-        # Apply scaling from parent if available (ensures dialog matches main app scale on all platforms).
+        # Apply scaling from ancestor MainWindow if available (ensures dialog matches main app scale on all platforms).
         if parent:
-            parent.update_all_widgets(self, parent.screen_scale)
+            current = parent
+            while current and not hasattr(current, 'update_all_widgets'):
+                current = current.parent()
+            if current and hasattr(current, 'update_all_widgets'):
+                current.update_all_widgets(self, current.screen_scale)
 
+    def add_sensor_row(self):
+        row = self.sensor_table.rowCount()
+        self.sensor_table.insertRow(row)
+        for col in range(6):
+            self.sensor_table.setItem(row, col, QTableWidgetItem(""))
+
+    def load_sensors(self, sensors):
+        self.sensor_table.setRowCount(len(sensors))
+        for row, sensor in enumerate(sensors):
+            self.sensor_table.setItem(row, 0, QTableWidgetItem(sensor.get('sn', '')))
+            self.sensor_table.setItem(row, 1, QTableWidgetItem(sensor.get('label', '')))
+            self.sensor_table.setItem(row, 2, QTableWidgetItem(sensor.get('length', '')))
+            self.sensor_table.setItem(row, 3, QTableWidgetItem(sensor.get('spacing', '')))
+            self.sensor_table.setItem(row, 4, QTableWidgetItem(sensor.get('saturation_load', '')))
+            self.sensor_table.setItem(row, 5, QTableWidgetItem(sensor.get('saturation_microstrain', '')))
+
+    def get_sensors(self):
+        sensors = []
+        for row in range(self.sensor_table.rowCount()):
+            sensor = {
+                'sn': self.sensor_table.item(row, 0).text(),
+                'label': self.sensor_table.item(row, 1).text(),
+                'length': self.sensor_table.item(row, 2).text(),
+                'spacing': self.sensor_table.item(row, 3).text(),
+                'saturation_load': self.sensor_table.item(row, 4).text(),
+                'saturation_microstrain': self.sensor_table.item(row, 5).text()
+            }
+            if sensor['sn']:  # Skip empty rows
+                sensors.append(sensor)
+        return sensors
+
+class HeaderConfigDialog(QDialog):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Configure Header")
+        self.main_layout = QVBoxLayout(self)
+
+        # Note
+        self.note_edit = QLineEdit()
+        self.main_layout.addWidget(QLabel("Optional Note:"))
+        self.main_layout.addWidget(self.note_edit)
+
+        # Test Type
+        self.test_type_combo = QComboBox()
+        settings = load_settings()
+        test_types = ["Force Cycle", "Displacement Cycle", "Static Load", "Demo", "Other"] + settings.get('custom_test_types', [])
+        self.test_type_combo.addItems(test_types)
+        self.test_type_combo.currentTextChanged.connect(self.update_test_fields)
+        self.main_layout.addWidget(QLabel("Test Type:"))
+        self.main_layout.addWidget(self.test_type_combo)
+
+        self.other_edit = QLineEdit()
+        self.other_edit.setVisible(False)
+        self.main_layout.addWidget(self.other_edit)
+
+        # Dynamic fields for test params
+        self.params_layout = QFormLayout()
+        self.main_layout.addLayout(self.params_layout)
+
+        # Test Number (shown only for cycles)
+        self.test_number_spin = QSpinBox()
+        self.test_number_label = QLabel("Test Number in Session:")
+        self.params_layout.addRow(self.test_number_label, self.test_number_spin)
+        self.test_rest_edit = QLineEdit()
+        self.test_rest_label = QLabel("Time since Last Test:")
+        self.params_layout.addRow(self.test_rest_label, self.test_rest_edit)
+        # Initial hide (cross-platform visibility toggle via PyQt5)
+        self.test_number_label.setVisible(False)
+        self.test_number_spin.setVisible(False)
+        self.test_rest_label.setVisible(False)
+        self.test_rest_edit.setVisible(False)
+
+        # Number of Sensors
+        self.num_sensors_spin = QSpinBox()
+        self.num_sensors_spin.setRange(1, 5)
+        self.num_sensors_spin.valueChanged.connect(self.update_sensor_fields)
+        self.main_layout.addWidget(QLabel("Number of ICB-Sensors:"))
+        self.main_layout.addWidget(self.num_sensors_spin)
+
+        # Sensor assignment
+        self.sensor_layout = QVBoxLayout()
+        self.main_layout.addLayout(self.sensor_layout)
+
+        # Edit Sensor List button
+        edit_sensors_btn = QPushButton("Edit Sensor List")
+        edit_sensors_btn.clicked.connect(self.edit_sensors)
+        self.main_layout.addWidget(edit_sensors_btn)
+
+        # Hardware config button
+        edit_hardware_btn = QPushButton("Edit Hardware Config")
+        edit_hardware_btn.clicked.connect(self.edit_hardware)
+        self.main_layout.addWidget(edit_hardware_btn)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        self.main_layout.addWidget(buttons)
+
+        # Load defaults
+        self.settings = load_settings()
+        self.sensors = self.settings.get('sensors', [])
+        self.custom_types = self.settings.get('custom_test_types', [])
+        self.adc_config = self.settings.get('adc_config', "")
+        self.daq_config = self.settings.get('daq_config', "")
+        self.test_type_combo.addItems(self.custom_types)  # Ensure added
+
+        # Set default or last sensor config
+        last_num = self.settings.get('last_num_sensors', 5)
+        self.num_sensors_spin.setValue(last_num)
+        self.update_sensor_fields(last_num)
+
+        # Initial update
+        self.update_test_fields(self.test_type_combo.currentText())
+
+    def update_test_fields(self, test_type):
+        visible = "Cycle" in test_type
+        # Toggle visibility (cross-platform via PyQt5 setVisible on widgets)
+        self.test_number_label.setVisible(visible)
+        self.test_number_spin.setVisible(visible)
+        self.test_rest_label.setVisible(visible)
+        self.test_rest_edit.setVisible(visible)
+        self.other_edit.setVisible(test_type == "Other")
+        # TODO: Add more dynamic fields based on type, e.g., Force for Force Cycle
+
+    def update_sensor_fields(self, num):
+        while self.sensor_layout.count():
+            child = self.sensor_layout.takeAt(0)
+            if child.widget():
+                child.widget().deleteLater()
+        self.sensor_labels = []
+        self.sensor_sns = []
+
+        # Default labels and sorted sns
+        default_labels = ['A', 'B', 'C', 'D', 'E'][:num]
+        sorted_sns = sorted([s['sn'] for s in self.sensors if s['sn']], key=lambda x: int(x))[:num]
+
+        # Last config if available and matches num
+        last_labels = self.settings.get('last_labels', default_labels)
+        last_sns = self.settings.get('last_sns', sorted_sns)
+        use_last = len(last_labels) == num and len(last_sns) == num
+
+        for i in range(num):
+            hbox = QHBoxLayout()
+            label_combo = QComboBox()
+            label_combo.addItems(["A", "B", "C", "D", "E"])
+            label_combo.setCurrentText(last_labels[i] if use_last else default_labels[i])
+            hbox.addWidget(QLabel(f"Sensor {i+1} Label:"))
+            hbox.addWidget(label_combo)
+            sn_combo = QComboBox()
+            sn_combo.addItems([s['sn'] for s in self.sensors])
+            sn_combo.setCurrentText(last_sns[i] if use_last else sorted_sns[i])
+            hbox.addWidget(QLabel("Serial#:"))
+            hbox.addWidget(sn_combo)
+            self.sensor_layout.addLayout(hbox)
+            self.sensor_labels.append(label_combo)
+            self.sensor_sns.append(sn_combo)
+
+    def accept(self):
+        labels = [combo.currentText() for combo in self.sensor_labels]
+        sns = [combo.currentText() for combo in self.sensor_sns]
+        if len(set(labels)) != len(labels) or len(set(sns)) != len(sns):
+            QMessageBox.warning(self, "Duplicate Error", "Sensor labels and serial numbers must be unique.")
+            return
+
+        # Save last config (cross-platform settings persistence via JSON)
+        self.settings['last_num_sensors'] = self.num_sensors_spin.value()
+        self.settings['last_labels'] = labels
+        self.settings['last_sns'] = sns
+        save_settings(self.settings)
+
+        super().accept()
+
+    def edit_sensors(self):
+        dialog = SettingsDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.settings['sensors'] = dialog.get_sensors()
+            save_settings(self.settings)
+            self.sensors = self.settings['sensors']
+            self.update_sensor_fields(self.num_sensors_spin.value())
+
+    def edit_hardware(self):
+        dialog = SettingsDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.settings['adc_config'] = dialog.adc_config_edit.text()
+            self.settings['daq_config'] = dialog.daq_config_edit.text()
+            save_settings(self.settings)
+            self.adc_config = self.settings['adc_config']
+            self.daq_config = self.settings['daq_config']
+
+    def get_header_content(self):
+        header = []
+        note = self.note_edit.text().strip()
+        if note:
+            header.append(note)
+
+        test_type = self.test_type_combo.currentText()
+        if test_type == "Other":
+            custom = self.other_edit.text().strip()
+            if custom and custom not in self.custom_types:
+                self.custom_types.append(custom)
+                self.settings['custom_test_types'] = self.custom_types
+                save_settings(self.settings)
+            test_type = custom
+        params_str = f"Test Type: {test_type}"
+        # TODO: Append params based on fields
+        header.append(params_str)
+
+        if "Cycle" in test_type:
+            header.append(f"Test Number in Session: {self.test_number_spin.value()}, Time since Last Test: {self.test_rest_edit.text()}")
+
+        labels = ','.join([combo.currentText() for combo in self.sensor_labels])
+        header.append(f"Number of ICB-Sensors: {self.num_sensors_spin.value()}, Sensor Label(s): {labels}")
+
+        for i, label in enumerate([combo.currentText() for combo in self.sensor_labels]):
+            sn = [combo.currentText() for combo in self.sensor_sns][i]
+            sensor = next((s for s in self.sensors if s['sn'] == sn), {})
+            header.append(f"ICB-Sensor {label}'s Serial#: {sn}, Length (mm): {sensor.get('length', '')}, Spacing (mm): {sensor.get('spacing', '')}, Saturation Load (N): {sensor.get('saturation_load', '')}, Microstrain at Saturation: {sensor.get('saturation_microstrain', '')}")
+
+        header.append(self.adc_config)
+        header.append(self.daq_config)
+        return header
 
 class HomePage(QWidget):
     # Home page widget: displays welcome and entry button to processing page.
@@ -89,28 +333,38 @@ class HomePage(QWidget):
         spacer = QSpacerItem(20, int(base_spacer_height * parent.screen_scale), QSizePolicy.Minimum, QSizePolicy.Fixed)  # Fixed vertical spacer to raise button (cross-platform pixel control via PyQt5).
         layout.addItem(spacer)
 
-
 class CollectPage(QWidget):
     # New collection session page with Start/Stop/Back buttons (modeled after FilePage button layout).
     # Left side left empty for future controls (status, parameters, plots, etc.).
     def __init__(self, parent=None):
         super().__init__(parent)
         self.mainwindow = parent
+        self.header_content = None  # Initial None, set after config
+        self.header_configured = False  # Flag for update
+        self.collecting = False  # Flag for ongoing collection
+        self.test_number = 1  # For auto-increment
 
         self.main_layout = QHBoxLayout(self)
 
         # Left side: space for future additions (status, parameters, real-time plots, etc.)
-        left_vbox = QVBoxLayout()
-        placeholder = QLabel("Collection Session\n\nReady - configure parameters and press Start")
-        placeholder.setAlignment(Qt.AlignCenter)
-        placeholder.setWordWrap(True)
-        left_vbox.addWidget(placeholder)
-        left_vbox.addStretch()  # Keeps content top-aligned / centered as needed later
+        self.left_vbox = QVBoxLayout()
+        self.status_label = QLabel("Collection Session\n\nReady - configure parameters and press Start")
+        self.status_label.setAlignment(Qt.AlignCenter)
+        self.status_label.setWordWrap(True)
+        self.left_vbox.addWidget(self.status_label)
+        self.left_vbox.addStretch()  # Keeps content top-aligned / centered as needed later
 
-        self.main_layout.addLayout(left_vbox, stretch=6)
+        self.main_layout.addLayout(self.left_vbox, stretch=6)
 
         # Right side: buttons (mirrors FilePage layout style)
         right_vbox = QVBoxLayout()
+
+        # Configure Header button
+        config_button = QPushButton("Configure Header")
+        config_button.setObjectName("config_button")
+        config_button.clicked.connect(self.configure_header)
+        config_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
+        right_vbox.addWidget(config_button, stretch=1)
 
         # Start button (large, like "Plot Selected")
         start_button = QPushButton("Start")
@@ -120,30 +374,91 @@ class CollectPage(QWidget):
         right_vbox.addWidget(start_button, stretch=2)
 
         # Stop button
-        stop_button = QPushButton("Stop")
-        stop_button.setObjectName("stop_button")
-        stop_button.clicked.connect(self.stop_collection)
-        stop_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
-        right_vbox.addWidget(stop_button, stretch=1)
+        self.stop_button = QPushButton("Stop")
+        self.stop_button.setObjectName("stop_button")
+        self.stop_button.clicked.connect(self.stop_collection)
+        self.stop_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
+        self.stop_button.setEnabled(False)  # Disabled until starting
+        right_vbox.addWidget(self.stop_button, stretch=1)
 
         # Back button (same styling/name as FilePage for shared scaling)
-        back_button = QPushButton("Back to Home")
-        back_button.setObjectName("back_button")
-        back_button.clicked.connect(parent.go_to_home)
-        back_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
-        right_vbox.addWidget(back_button, stretch=1)
+        self.back_button = QPushButton("Back to Home")
+        self.back_button.setObjectName("back_button")
+        self.back_button.clicked.connect(parent.go_to_home)
+        self.back_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
+        right_vbox.addWidget(self.back_button, stretch=1)
 
         self.main_layout.addLayout(right_vbox, stretch=1)
 
+        # Load default header if any
+        self.load_default_header()
+
+    def load_default_header(self):
+        # TODO: Load from last session or defaults
+        pass
+
+    def configure_header(self):
+        dialog = HeaderConfigDialog(self)
+        if dialog.exec_() == QDialog.Accepted:
+            self.header_content = dialog.get_header_content()
+            self.header_configured = True
+            self.status_label.setText("Header configured. Ready to start.")
+
     def start_collection(self):
-        # TODO: Integrate with collect_data2.py (e.g. launch DataReceiverWriter thread,
-        # RealTimePlotWindow, or run_collection(...)). For now placeholder.
-        QMessageBox.information(self, "Collection", "Start collection clicked.\n\nIntegration with collect_data2.py coming next.")
+        if self.collecting:
+            return  # Prevent multiple starts
+
+        if not self.header_configured:
+            QMessageBox.warning(self, "Configuration Required", "Please configure the header before starting collection.")
+            return
+
+        # Parse sensors from header_content - string parsing is cross-platform and works identically on Windows, Linux, and Raspberry Pi
+        sensors_line = next((line for line in self.header_content if "Number of ICB-Sensors:" in line), None)
+        if sensors_line is None:
+            QMessageBox.warning(self, "Error", "Could not find sensor information in header.")
+            return
+
+        try:
+            labels_part = sensors_line.split("Sensor Label(s): ")[1].strip()
+            sensors = labels_part.replace(' ', '')  # Remove any spaces for clean comma-separated string
+        except IndexError:
+            QMessageBox.warning(self, "Error", "Invalid sensor label format in header.")
+            return
+
+        # Extract num_sensors from the line as well for consistency
+        num_part = sensors_line.split(", Sensor Label(s):")[0].split(": ")[1].strip()
+        num_sensors = int(num_part)
+
+        self.collecting = True
+        self.stop_button.setEnabled(True)
+        self.back_button.setEnabled(False)  # Lock back button during collection to prevent navigation issues (cross-platform UI state management via PyQt5)
+        self.status_label.setText("Collecting data... Press Stop to end.")
+
+        # Initialize data receiver and plot window directly (avoids creating a new QApplication, integrates with existing GUI app)
+        # This approach ensures cross-platform compatibility as PyQt5 handles widget creation and threading uniformly across OSes
+        self.ReadWrite = cd.DataReceiverWriter(save_format='raw', num_sensors=num_sensors, sensor_labels=sensors.split(','), header_content=self.header_content)
+        self.window = cd.RealTimePlotWindow(self.ReadWrite, num_sensors, sensors.split(','))
+        self.ReadWrite.start()
 
     def stop_collection(self):
-        # TODO: Stop thread, close plots, etc.
-        QMessageBox.information(self, "Collection", "Stop collection clicked.")
+        if self.collecting:
+            self.ReadWrite.running = False
+            self.ReadWrite.wait()
+            self.collecting = False
+            self.stop_button.setEnabled(False)
+            self.back_button.setEnabled(True)
+            self.status_label.setText("Collection stopped.")
+            # Auto-increment if cycle
+            if "Cycle" in self.header_content[1]:  # Assuming index
+                self.test_number += 1
+                # Update header with new test_number
+            self.header_configured = False  # Reset for next
 
+    def update_status(self, msg):
+        self.status_label.setText(msg)
+
+    def update_rate(self, rate):
+        self.status_label.setText(f"Collecting... Rate: {rate:.1f} Hz")
 
 class FilePage(QWidget):
     # File selection page: allows browsing, year selection, tree view of data, and plotting.
@@ -365,7 +680,6 @@ class FilePage(QWidget):
         plot_dialog.resize(int(1000 * self.mainwindow.screen_scale), int(800 * self.mainwindow.screen_scale))
         plot_dialog.exec_()
 
-
 class MainWindow(QMainWindow):
     # Main application window: handles stacking pages, menu, scaling, and fullscreen.
     # Scaling logic ensures touch-friendliness and consistency across platforms.
@@ -448,6 +762,9 @@ class MainWindow(QMainWindow):
             self.settings['independent_plots'] = dialog.independent_plots_checkbox.isChecked()
             self.settings['screen_width'] = dialog.screen_width_spinbox.value()
             self.settings['detect_screen_size'] = dialog.detect_screen_size_checkbox.isChecked()
+            self.settings['adc_config'] = dialog.adc_config_edit.text()
+            self.settings['daq_config'] = dialog.daq_config_edit.text()
+            self.settings['sensors'] = dialog.get_sensors()
             save_settings(self.settings)
             # Resize and rescale based on new settings (cross-platform via size_window).
             self.size_window()
@@ -462,7 +779,8 @@ class MainWindow(QMainWindow):
         self.stack.setCurrentIndex(2)
 
     def go_to_home(self):
-        # Navigates back to home.
+        if hasattr(self, 'collect_page') and self.collect_page.collecting:
+            return  # Lock if collecting
         self.stack.setCurrentIndex(0)
 
     def size_window(self):
@@ -521,6 +839,14 @@ class MainWindow(QMainWindow):
             min_width = max(prop_width, self.base_button_width * 3)
             widget.setMinimumSize(min_width, int(self.base_button_height * scale_factor))
             widget.setMaximumWidth(min_width)
+
+        elif obj_name == "config_button" or text == "Configure Header":
+            scaled_font = QFont(self.base_normal_font)
+            scaled_font.setPointSize(int(self.base_font_size * scale_factor))
+            widget.setFont(scaled_font)
+            button_width = int(self.design_screen['width'] * (1/7) * scale_factor)
+            widget.setFixedWidth(button_width)
+            widget.setMinimumHeight(int(self.base_button_height * scale_factor))
 
         elif obj_name == "start_button" or text == "Start":
             scaled_font = QFont(self.base_normal_font)
@@ -639,13 +965,15 @@ class MainWindow(QMainWindow):
         else:
             self.showFullScreen()
 
-
 def load_settings():
-    # Loads settings from JSON, defaults if file missing (cross-platform os.path and json).
+    # Loads settings from JSON, defaults if file missing (cross-platform file I/O).
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r') as f:
             return json.load(f)
-    return {'independent_plots': False, 'screen_width': 1920, 'data_folder': RAW_DATA_BASE, 'detect_screen_size': True}
+    return {'independent_plots': False, 'screen_width': 1920, 'data_folder': RAW_DATA_BASE, 'detect_screen_size': True,
+            'adc_config': "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_90SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
+            'daq_config': "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi",
+            'sensors': [], 'custom_test_types': [], 'last_num_sensors': 5, 'last_labels': ['A', 'B', 'C', 'D', 'E'], 'last_sns': []}
 
 def save_settings(settings):
     # Saves settings to JSON (cross-platform).
@@ -672,7 +1000,6 @@ def set_dark_mode(app):
     palette.setColor(QPalette.HighlightedText, Qt.black)
     
     app.setPalette(palette)
-
 
 if __name__ == "__main__":
     # Main entry: creates app, sets dark mode, shows window (QApplication is cross-platform core).

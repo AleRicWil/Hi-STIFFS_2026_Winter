@@ -24,7 +24,7 @@ PLOT_REFRESH_HZ = 30  # Refresh rate for plot updates in Hz
 WIFI_IP = "192.168.4.1"
 WIFI_PORT = 80
 WIFI_URL = f"http://{WIFI_IP}:{WIFI_PORT}/"
-# Hardcoded paths (adjust as needed for your environment)
+# Hardcoded paths (adjust as needed for your environment) - os.path ensures cross-platform path handling
 CALIBRATION_PATH = r'Hi-STIFFS_2026_Winter\AllInOne\calibration_history.csv'
 RAW_DATA_BASE = r'Hi-STIFFS_2026_Winter\Raw Data'
 
@@ -35,7 +35,7 @@ class DataReceiverWriter(QtCore.QThread):
     status_signal = QtCore.pyqtSignal(str)  # For status messages
     rate_updated = QtCore.pyqtSignal(float)  # Emits updated input rate in Hz
 
-    def __init__(self, save_format, num_sensors, sensor_labels, header_content=[" "]):
+    def __init__(self, save_format, num_sensors, sensor_labels, header_content=None):  # Made header_content optional with default None
         super().__init__()
         
         print(f"Datastream status:")
@@ -47,7 +47,7 @@ class DataReceiverWriter(QtCore.QThread):
         self.last_rate_time = time.time()
         self.sess = requests.Session()
 
-        # Create CSV file
+        # Create CSV file - os.makedirs and os.path.join ensure cross-platform directory creation and path compatibility
         now = datetime.datetime.now()
         date_str = now.strftime("%Y-%m-%d")
         time_str = now.strftime("%H%M%S")
@@ -60,9 +60,12 @@ class DataReceiverWriter(QtCore.QThread):
 
         print(f"Writing metadata to CSV...")
         self.csvwriter.writerow(['===BEGIN_METADATA==='])
-        for l in self.sensor_labels:
-            header_content.insert(0, f'Test Name: {date_str}_test_{time_str}, yyyy-mm-dd_test_hhmmss')
-            header_content += [f"ICB-Sensor {l}'s Latest Calibration: N/A, k{l}1: 1.0, d{l}1: 1.0, c{l}1: 1.0, k{l}2: 1.0, d{l}2: 1.0, c{l}2: 1.0"]
+        # Handle header_content: If None (e.g., standalone run), use minimal defaults; GUI will provide full list
+        if header_content is None:
+            header_content = []  # Empty default; add minimal required for standalone
+            for l in self.sensor_labels:
+                header_content.insert(0, f'Test Name: {date_str}_test_{time_str}, yyyy-mm-dd_test_hhmmss')
+                header_content += [f"ICB-Sensor {l}'s Latest Calibration: N/A, k{l}1: 1.0, d{l}1: 1.0, c{l}1: 1.0, k{l}2: 1.0, d{l}2: 1.0, c{l}2: 1.0"]
         for row in header_content:
             row = row.split(', ')
             self.csvwriter.writerow(row)
@@ -180,7 +183,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.ReadWrite.status_signal.connect(print)  # Print status to console
         self.ReadWrite.rate_updated.connect(lambda rate: self.rate_label.setText(f"Input Rate: {rate:.1f} Hz"))
 
-        # Load calibration coefficients
+        # Load calibration coefficients - pandas.read_csv is cross-platform for file reading
         print(f"\tLoading sensor calibration...")
         self.k1 = [1.0] * self.num_sensors
         self.d1 = [1.0] * self.num_sensors
@@ -202,7 +205,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         except Exception as e:
             print(f"\tError loading calibration: {str(e)}. Using defaults (all 1.0).")
 
-        # Performance optimizations for high refresh rates
+        # Performance optimizations for high refresh rates - pyqtgraph config is cross-platform via PyQt5
         pg.setConfigOptions(useOpenGL=True, antialias=False)
 
         # Strain plot setup, now directly in this QMainWindow as central widget
@@ -282,7 +285,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.positions = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
         print(f"\t\tSet up deques for plot elements. Max size:{maxlen}")
 
-        # Set up timer for fixed-rate plot updates
+        # Set up timer for fixed-rate plot updates - QTimer is cross-platform for timed updates
         print(f"\t\tStarting plot refresh timer...")
         self.plot_timer = QtCore.QTimer()
         self.plot_timer.timeout.connect(self.update_plots)
@@ -364,7 +367,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.ReadWrite.running = False
         self.ReadWrite.wait()  # Wait for thread to finish
 
-def run_collection(save_format='raw', plot=True, sensors='A', header_content=[" "]):
+def run_collection(save_format='raw', plot=True, sensors='A', header_content=None):  # header_content now optional (GUI provides it)
     if sensors.isdigit():
         num = int(sensors)
         if num < 1 or num > 5:
@@ -376,9 +379,9 @@ def run_collection(save_format='raw', plot=True, sensors='A', header_content=[" 
             raise ValueError("Invalid sensor labels; must be comma-separated from A-E, no duplicates.")
     num_sensors = len(sensor_labels)
 
-    ReadWrite = DataReceiverWriter(save_format, num_sensors, sensor_labels, header_content)
+    ReadWrite = DataReceiverWriter(save_format, num_sensors, sensor_labels, header_content)  # Pass header_content directly
     if plot:
-        app = QtWidgets.QApplication([])
+        app = QtWidgets.QApplication([])  # QApplication is cross-platform for GUI/plotting
         window = RealTimePlotWindow(ReadWrite, num_sensors, sensor_labels)
         ReadWrite.start()
         print("=== Press/Hold 'space' to end data collection ===")
@@ -402,12 +405,14 @@ if __name__ == "__main__":
     parser.add_argument('--sensors', default='A', help="Number of sensors (1-5) or comma-separated labels (e.g., 'A,C,E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
     args = parser.parse_args()
 
-    my_header_content = [
-        "Thow-away trial run. Not real data",
+    # For standalone: Use example header_content (GUI will override with dynamic list)
+    example_header_content = [
+        "Note: Thow-away trial run. Not real data",
         "Test Type: Force Cycle, Force: 20N, Cycles: 66, Dwell Time: 1sec, Tool Accuracy: +/-0.05N",
         "Test Number in Session: 10, Time since Last Test: ~10min",
         f"Number of ICB-Sensors: 1, Sensor Label(s): {args.sensors}",
         "ICB-Sensor B's Serial#: 002, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_90SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
-        "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"]
-    run_collection(args.save_format, args.plot, args.sensors, my_header_content)
+        "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"
+    ]
+    run_collection(args.save_format, args.plot, args.sensors, example_header_content)
