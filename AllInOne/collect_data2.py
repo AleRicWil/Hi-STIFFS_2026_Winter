@@ -403,7 +403,7 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     my_header_content = [
-        "Thow-away trial run. Not real data"
+        "Thow-away trial run. Not real data",
         "Test Type: Force Cycle, Force: 20N, Cycles: 66, Dwell Time: 1sec, Tool Accuracy: +/-0.05N",
         "Test Number in Session: 10, Time since Last Test: ~10min",
         f"Number of ICB-Sensors: 1, Sensor Label(s): {args.sensors}",
