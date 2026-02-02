@@ -72,12 +72,77 @@ class HomePage(QWidget):
         welcome_label.setAlignment(QtCore.Qt.AlignCenter)
         layout.addWidget(welcome_label)
 
+        # Collect Data button (new, added just above Process)
+        collect_button = QPushButton("Collect Data")
+        collect_button.setObjectName("collect_button")
+        collect_button.clicked.connect(parent.go_to_collect)
+        collect_button.setMinimumSize(parent.base_button_width * 2, parent.base_button_height)
+        layout.addWidget(collect_button, alignment=Qt.AlignHCenter)
+
         # Process button: main entry point, sized for touch (wide for prominence).
         process_button = QPushButton("Process Existing Data")
         process_button.setObjectName("process_button")  # Unique ID for targeted scaling.
         process_button.clicked.connect(parent.go_to_processing)
         process_button.setMinimumSize(parent.base_button_width * 2, parent.base_button_height)  # Initial touch-friendly size.
-        layout.addWidget(process_button)
+        layout.addWidget(process_button, alignment=Qt.AlignHCenter)  # Centers button horizontally to prevent full-width spanning (cross-platform via Qt alignment).
+        base_spacer_height = 100  # Base height in pixels; scale for touch-friendliness.
+        spacer = QSpacerItem(20, int(base_spacer_height * parent.screen_scale), QSizePolicy.Minimum, QSizePolicy.Fixed)  # Fixed vertical spacer to raise button (cross-platform pixel control via PyQt5).
+        layout.addItem(spacer)
+
+
+class CollectPage(QWidget):
+    # New collection session page with Start/Stop/Back buttons (modeled after FilePage button layout).
+    # Left side left empty for future controls (status, parameters, plots, etc.).
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.mainwindow = parent
+
+        self.main_layout = QHBoxLayout(self)
+
+        # Left side: space for future additions (status, parameters, real-time plots, etc.)
+        left_vbox = QVBoxLayout()
+        placeholder = QLabel("Collection Session\n\nReady - configure parameters and press Start")
+        placeholder.setAlignment(Qt.AlignCenter)
+        placeholder.setWordWrap(True)
+        left_vbox.addWidget(placeholder)
+        left_vbox.addStretch()  # Keeps content top-aligned / centered as needed later
+
+        self.main_layout.addLayout(left_vbox, stretch=6)
+
+        # Right side: buttons (mirrors FilePage layout style)
+        right_vbox = QVBoxLayout()
+
+        # Start button (large, like "Plot Selected")
+        start_button = QPushButton("Start")
+        start_button.setObjectName("start_button")
+        start_button.clicked.connect(self.start_collection)
+        start_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
+        right_vbox.addWidget(start_button, stretch=2)
+
+        # Stop button
+        stop_button = QPushButton("Stop")
+        stop_button.setObjectName("stop_button")
+        stop_button.clicked.connect(self.stop_collection)
+        stop_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
+        right_vbox.addWidget(stop_button, stretch=1)
+
+        # Back button (same styling/name as FilePage for shared scaling)
+        back_button = QPushButton("Back to Home")
+        back_button.setObjectName("back_button")
+        back_button.clicked.connect(parent.go_to_home)
+        back_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
+        right_vbox.addWidget(back_button, stretch=1)
+
+        self.main_layout.addLayout(right_vbox, stretch=1)
+
+    def start_collection(self):
+        # TODO: Integrate with collect_data2.py (e.g. launch DataReceiverWriter thread,
+        # RealTimePlotWindow, or run_collection(...)). For now placeholder.
+        QMessageBox.information(self, "Collection", "Start collection clicked.\n\nIntegration with collect_data2.py coming next.")
+
+    def stop_collection(self):
+        # TODO: Stop thread, close plots, etc.
+        QMessageBox.information(self, "Collection", "Stop collection clicked.")
 
 
 class FilePage(QWidget):
@@ -89,27 +154,44 @@ class FilePage(QWidget):
         self.data_files = {}
         self.current_base = None
 
-        layout = QVBoxLayout(self)
+        # Main horizontal layout for left (tree) and right (buttons) sections.
+        self.main_layout = QHBoxLayout(self)
 
-        # Horizontal layout for year selection and path/browse controls.
+        # Left vertical layout for year controls and tree (takes 6/7 width via stretch).
+        left_vbox = QVBoxLayout()
         self.year_layout = QHBoxLayout()
-        layout.addLayout(self.year_layout)
-
+        left_vbox.addLayout(self.year_layout)
+        
         # Tree widget for displaying months/days/times, with touch-friendly item heights via stylesheet.
         self.tree = QTreeWidget()
         self.tree.setObjectName("data_tree")  # Unique ID for scaling.
+        self.tree.setColumnCount(2)  # Two columns, each to be sized at 3/7 of window width (cross-platform via PyQt5 column management).
         self.tree.setHeaderHidden(True)
         self.tree.setSelectionMode(QAbstractItemView.SingleSelection)
         # Initial stylesheet for item height (cross-platform, Qt stylesheets work identically on Windows/Linux/Pi).
         self.tree.setStyleSheet(f"QTreeWidget::item {{ height: {self.mainwindow.base_tree_item_height}px; }}")
-        layout.addWidget(self.tree)
+        left_vbox.addWidget(self.tree)
+        
+        self.main_layout.addLayout(left_vbox, stretch=6)  # Allocates 6/7 of horizontal space to left section (cross-platform layout proportion via PyQt5 stretch factors).
+
+        # Right vertical layout for buttons (takes 1/7 width via stretch).
+        right_vbox = QVBoxLayout()
 
         # Plot button: triggers plotting of selected data.
         plot_button = QPushButton("Plot Selected")
         plot_button.setObjectName("plot_button")  # Unique ID.
         plot_button.clicked.connect(self.plot_selected)
         plot_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)  # Touch size.
-        layout.addWidget(plot_button)
+        right_vbox.addWidget(plot_button, stretch=2)  # Takes 2/3 vertical space in right column (cross-platform via PyQt5 stretch).
+
+        # Back button: returns to home.
+        back_button = QPushButton("Back to Home")
+        back_button.setObjectName("back_button")  # Unique ID.
+        back_button.clicked.connect(parent.go_to_home)
+        back_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)  # Base size, adjusted later.
+        right_vbox.addWidget(back_button, stretch=1)  # Takes 1/3 vertical space, half the size of plot button (cross-platform via PyQt5 stretch).
+
+        self.main_layout.addLayout(right_vbox, stretch=1)  # Allocates 1/7 of horizontal space to right section.
 
         # Browse button: opens folder dialog (QFileDialog is cross-platform).
         self.browse_button = QPushButton("Browse Folder")
@@ -122,13 +204,6 @@ class FilePage(QWidget):
         self.path_label.setObjectName("path_label")
         self.path_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         self.path_label.setWordWrap(False)  # No wrapping for clean display.
-
-        # Back button: returns to home, wider for touch prominence.
-        back_button = QPushButton("Back to Home")
-        back_button.setObjectName("back_button")  # Unique ID.
-        back_button.clicked.connect(parent.go_to_home)
-        back_button.setMinimumSize(self.mainwindow.wide1_button_width, self.mainwindow.base_button_height)  # Wider size.
-        layout.addWidget(back_button)
 
     def browse_folder(self):
         # Opens cross-platform folder dialog to select data directory.
@@ -208,12 +283,14 @@ class FilePage(QWidget):
         for month in sorted_months:
             sorted_days = sorted(self.data_files[year][month].keys(), key=int)
             total_days += len(sorted_days)
-            month_item = QTreeWidgetItem([month])
+            num_days = len(sorted_days)
+            month_item = QTreeWidgetItem([month, f"{num_days} days"])  # Col0: month, Col1: details (cross-platform multi-column tree via PyQt5).
             for day in sorted_days:
-                day_item = QTreeWidgetItem([day])
+                num_times = len(self.data_files[year][month][day])
+                day_item = QTreeWidgetItem([day, f"{num_times} files"])  # Col0: day, Col1: details.
                 for full_date, t in self.data_files[year][month][day]:
                     formatted_t = f"{t[:2]}:{t[2:4]}:{t[4:]}"
-                    child = QTreeWidgetItem([formatted_t])
+                    child = QTreeWidgetItem([formatted_t, full_date])  # Col0: time, Col1: date.
                     child.setData(0, QtCore.Qt.UserRole, (full_date, t))
                     day_item.addChild(child)
                 month_item.addChild(day_item)
@@ -340,8 +417,11 @@ class MainWindow(QMainWindow):
         self.home_page = HomePage(self)
         self.stack.addWidget(self.home_page)
 
+        self.collect_page = CollectPage(self)
+        self.stack.addWidget(self.collect_page)  # index 1
+
         self.file_page = FilePage(self)
-        self.stack.addWidget(self.file_page)
+        self.stack.addWidget(self.file_page)    # index 2
 
         # Menu bar: settings and view options.
         settings_menu = self.menuBar().addMenu("Settings")
@@ -372,11 +452,14 @@ class MainWindow(QMainWindow):
             # Resize and rescale based on new settings (cross-platform via size_window).
             self.size_window()
 
+    def go_to_collect(self):
+        self.stack.setCurrentIndex(1)
+
     def go_to_processing(self):
         # Navigates to file page, loads data.
         path = self.settings.get('data_folder', RAW_DATA_BASE)
         self.file_page.load_data(path)
-        self.stack.setCurrentIndex(1)
+        self.stack.setCurrentIndex(2)
 
     def go_to_home(self):
         # Navigates back to home.
@@ -430,23 +513,55 @@ class MainWindow(QMainWindow):
         text = widget.text() if hasattr(widget, 'text') else ''
         
         # Specific widget updates: allows per-widget customization.
+        if obj_name == "collect_button" or text == "Collect Data":
+            scaled_font = QFont(self.base_normal_font)
+            scaled_font.setPointSize(int(self.base_font_size * scale_factor))
+            widget.setFont(scaled_font)
+            prop_width = int(self.wide2_button_width * scale_factor)
+            min_width = max(prop_width, self.base_button_width * 3)
+            widget.setMinimumSize(min_width, int(self.base_button_height * scale_factor))
+            widget.setMaximumWidth(min_width)
+
+        elif obj_name == "start_button" or text == "Start":
+            scaled_font = QFont(self.base_normal_font)
+            scaled_font.setPointSize(int(self.base_font_size * scale_factor))
+            widget.setFont(scaled_font)
+            button_width = int(self.design_screen['width'] * (1/7) * scale_factor)
+            widget.setFixedWidth(button_width)
+            widget.setMinimumHeight(int(self.base_button_height * scale_factor))
+
+        elif obj_name == "stop_button" or text == "Stop":
+            scaled_font = QFont(self.base_normal_font)
+            scaled_font.setPointSize(int(self.base_font_size * scale_factor))
+            widget.setFont(scaled_font)
+            button_width = int(self.design_screen['width'] * (1/7) * scale_factor)
+            widget.setFixedWidth(button_width)
+            widget.setMinimumHeight(int(self.base_button_height * scale_factor))
+        
         if obj_name == "process_button" or text == "Process Existing Data":
             scaled_font = QFont(self.base_normal_font)
             scaled_font.setPointSize(int(self.base_font_size * scale_factor))
             widget.setFont(scaled_font)
-            widget.setMinimumSize(int(self.wide2_button_width * scale_factor), int(self.base_button_height * scale_factor))  # Wide main action.
+            prop_width = int(self.wide2_button_width * scale_factor)  # Proportional width based on screen scale (approx. 28% of design width).
+            min_width = max(prop_width, self.base_button_width * 3)  # Respect absolute minimum for touch-friendliness (cross-platform pixel enforcement).
+            widget.setMinimumSize(min_width, int(self.base_button_height * scale_factor))
+            widget.setMaximumWidth(min_width)  # Fixes width to proportional size without spanning full window (cross-platform via Qt size constraints).
 
         elif obj_name == "plot_button" or text == "Plot Selected":
             scaled_font = QFont(self.base_normal_font)
             scaled_font.setPointSize(int(self.base_font_size * scale_factor))
             widget.setFont(scaled_font)
-            widget.setMinimumSize(int(self.base_button_width * scale_factor), int(self.base_button_height * scale_factor))  # Standard size.
+            button_width = int(self.design_screen['width'] * (1/7) * scale_factor)  # Fixed 1/7 window width (cross-platform dynamic sizing).
+            widget.setFixedWidth(button_width)
+            widget.setMinimumHeight(int(self.base_button_height * scale_factor))  # Touch-friendly min height.
 
         elif obj_name == "back_button" or text == "Back to Home":
             scaled_font = QFont(self.base_normal_font)
             scaled_font.setPointSize(int(self.base_font_size * scale_factor))
             widget.setFont(scaled_font)
-            widget.setMinimumSize(int(self.wide1_button_width * scale_factor), int(self.base_button_height * scale_factor))  # Slightly wide.
+            button_width = int(self.design_screen['width'] * (1/7) * scale_factor)  # Fixed 1/7 window width.
+            widget.setFixedWidth(button_width)
+            widget.setMinimumHeight(int(self.base_button_height * scale_factor))
 
         elif obj_name == "browse_button" or text == "Browse Folder":
             scaled_font = QFont(self.base_normal_font)
@@ -466,6 +581,9 @@ class MainWindow(QMainWindow):
             widget.setFont(scaled_font)
             # Dynamic stylesheet for item height (touch-friendly, cross-platform).
             widget.setStyleSheet(f"QTreeWidget::item {{ height: {int(self.base_tree_item_height * scale_factor)}px; }}")
+            col_width = int(self.design_screen['width'] * (3/7) * scale_factor)  # Each column 3/7 of window width.
+            widget.setColumnWidth(0, col_width)
+            widget.setColumnWidth(1, col_width)
 
         elif obj_name == "path_label":
             scaled_font = QFont(self.base_normal_font)
@@ -513,7 +631,7 @@ class MainWindow(QMainWindow):
         # Recurse to children: handles nested and dynamic widgets (findChildren is cross-platform).
         for child in widget.findChildren(QWidget):
             self.update_all_widgets(child, scale_factor)
-    
+
     def toggle_fullscreen(self):
         # Toggles fullscreen mode (showFullScreen/showNormal are cross-platform).
         if self.isFullScreen():
