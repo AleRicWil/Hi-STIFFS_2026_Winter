@@ -106,16 +106,16 @@
 #include <ArduinoOTA.h> // For Over-The-Air updates
 
 #define FULL_SCALE (1LL << 23) // 2^23 for 24-bit signed scaling - retained for reference, though not used in raw output
-#define A_CS_PIN 10
-#define B_CS_PIN 9
-#define C_CS_PIN 8
-#define D_CS_PIN 7
-#define E_CS_PIN 6
-#define A_DRDY_PIN 5
-#define B_DRDY_PIN 4
-#define C_DRDY_PIN 3
-#define D_DRDY_PIN 2
-#define E_DRDY_PIN A6
+#define A_DRDY_PIN 10
+#define A_CS_PIN 9
+#define B_DRDY_PIN 8
+#define B_CS_PIN 7
+#define C_DRDY_PIN 6
+#define C_CS_PIN 5
+#define D_DRDY_PIN 4
+#define D_CS_PIN 3
+#define E_DRDY_PIN 2
+#define E_CS_PIN A6
 
 const int MAX_SENSORS = 5;     // Maximum possible sensors (A to E)
 const int NUM_SENSORS = 1;     // Set to 1-5 to use the first N sensors from all_configs below.
