@@ -24,12 +24,13 @@ HEADER_MARKER = r'===END_METADATA==='
 DATA_MARKER = r'===BEGIN_DATA==='
 
 class HiSTIFFSData:
-    def __init__(self, date, time, debug=False, base=RAW_DATA_BASE):
+    def __init__(self, date, time, nano_label='01', debug=False, base=RAW_DATA_BASE):
         # Form CSV path
         # Note: Using os.path.join ensures cross-platform compatibility for path construction on Windows, Linux, and Raspberry Pi.
         self.date = date
         self.time = time
-        self.data_csv_path = os.path.join(base, date, f"{date}_test_{time}.csv")
+        self.nano_label = nano_label
+        self.data_csv_path = os.path.join(base, date, f"{date}_{time}_{nano_label}.csv")
         if not os.path.exists(self.data_csv_path):
             self.exists = False
             print(f"No such data file at: {self.data_csv_path}")

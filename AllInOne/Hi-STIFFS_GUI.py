@@ -66,12 +66,12 @@ class SettingsDialog(QDialog):
 
         # Load current settings from JSON file.
         settings = load_settings()
-        self.independent_plots_checkbox.setChecked(settings.get('independent_plots', False))
-        self.detect_screen_size_checkbox.setChecked(settings.get('detect_screen_size', True))
-        self.screen_width_spinbox.setValue(settings.get('screen_width', 1920))
-        self.adc_config_edit.setText(settings.get('adc_config', "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_90SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV"))
-        self.daq_config_edit.setText(settings.get('daq_config', "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"))
-        self.load_sensors(settings.get('sensors', []))
+        self.independent_plots_checkbox.setChecked(settings['ui_preferences'].get('independent_plots', False))
+        self.detect_screen_size_checkbox.setChecked(settings['ui_preferences'].get('detect_screen_size', True))
+        self.screen_width_spinbox.setValue(settings['ui_preferences'].get('screen_width', 1920))
+        self.adc_config_edit.setText(settings['hardware_config'].get('adc_config', ""))
+        self.daq_config_edit.setText(settings['hardware_config'].get('daq_config', ""))
+        self.load_sensors(settings.get('sensors', []))  # Unchanged
 
         # Apply scaling from ancestor MainWindow if available (ensures dialog matches main app scale on all platforms).
         if parent:
@@ -118,6 +118,11 @@ class HeaderConfigDialog(QDialog):
         self.setWindowTitle("Configure Header")
         self.main_layout = QGridLayout(self)
 
+        self.settings = load_settings()
+        self.sensors = self.settings.get('sensors', [])
+        self.adc_config = self.settings['hardware_config'].get('adc_config', "")
+        self.daq_config = self.settings['hardware_config'].get('daq_config', "")
+
         # Note
         self.note_edit = QLineEdit()
         self.main_layout.addWidget(QLabel("Optional Note:"), 0, 0)
@@ -125,8 +130,7 @@ class HeaderConfigDialog(QDialog):
 
         # Test Type
         self.test_type_combo = QComboBox()
-        settings = load_settings()
-        test_types = ["Force Cycle", "Displacement Cycle", "Static Load", "Demo", "Other"] + settings.get('custom_test_types', [])
+        test_types = ["Force Cycle", "Displacement Cycle", "Static Load", "Demo", "Other"] + self.settings['test_config'].get('custom_test_types', [])
         self.test_type_combo.addItems(test_types)
         self.test_type_combo.currentTextChanged.connect(self.update_test_fields)
         self.main_layout.addWidget(QLabel("Test Type:"), 1, 0)
@@ -187,7 +191,7 @@ class HeaderConfigDialog(QDialog):
         self.daq_config = self.settings.get('daq_config', "")
 
         # Set default or last sensor config (block signals to prevent double update)
-        last_num = self.settings.get('last_num_sensors', 5)
+        last_num = self.settings['session_state'].get('last_num_sensors', 5)
         self.num_sensors_spin.blockSignals(True)  # Prevent valueChanged trigger
         self.num_sensors_spin.setValue(last_num)
         self.num_sensors_spin.blockSignals(False)  # Re-enable
@@ -226,8 +230,8 @@ class HeaderConfigDialog(QDialog):
         sorted_sns = sorted([s['sn'] for s in self.sensors if s['sn']], key=lambda x: int(x))[:num]
 
         # Last config if available and matches num
-        last_labels = self.settings.get('last_labels', default_labels)
-        last_sns = self.settings.get('last_sns', sorted_sns)
+        last_labels = self.settings['session_state'].get('last_labels', default_labels)
+        last_sns = self.settings['session_state'].get('last_sns', sorted_sns)
         use_last = len(last_labels) == num and len(last_sns) == num
 
         for i in range(num):
@@ -262,9 +266,9 @@ class HeaderConfigDialog(QDialog):
             return
 
         # Save last config (cross-platform settings persistence via JSON)
-        self.settings['last_num_sensors'] = self.num_sensors_spin.value()
-        self.settings['last_labels'] = labels
-        self.settings['last_sns'] = sns
+        self.settings['session_state']['last_num_sensors'] = self.num_sensors_spin.value()
+        self.settings['session_state']['last_labels'] = labels
+        self.settings['session_state']['last_sns'] = sns
         save_settings(self.settings)
 
         super().accept()
@@ -280,24 +284,24 @@ class HeaderConfigDialog(QDialog):
     def edit_hardware(self):
         dialog = SettingsDialog(self)
         if dialog.exec_() == QDialog.Accepted:
-            self.settings['adc_config'] = dialog.adc_config_edit.text()
-            self.settings['daq_config'] = dialog.daq_config_edit.text()
+            self.settings['hardware_config']['adc_config'] = dialog.adc_config_edit.text()
+            self.settings['hardware_config']['daq_config'] = dialog.daq_config_edit.text()
             save_settings(self.settings)
-            self.adc_config = self.settings['adc_config']
-            self.daq_config = self.settings['daq_config']
+            self.adc_config = self.settings['hardware_config']['adc_config']
+            self.daq_config = self.settings['hardware_config']['daq_config']
 
     def get_header_content(self):
         header = []
         note = self.note_edit.text().strip()
-        if note:
-            header.append(note)
+        if note: header.append(f"Note: {note}")
+        else: header.append(f"Note:")
 
         test_type = self.test_type_combo.currentText()
         if test_type == "Other":
             custom = self.other_edit.text().strip()
             if custom and custom not in self.custom_types:
                 self.custom_types.append(custom)
-                self.settings['custom_test_types'] = self.custom_types
+                self.settings['test_config']['custom_test_types'] = self.custom_types
                 save_settings(self.settings)
             test_type = custom
         params_str = f"Test Type: {test_type}"
@@ -537,11 +541,20 @@ class FilePage(QWidget):
 
     def browse_folder(self):
         # Opens cross-platform folder dialog to select data directory.
-        folder_path = QFileDialog.getExistingDirectory(self.mainwindow, "Select Data Folder", self.current_base or self.mainwindow.settings.get('data_folder', RAW_DATA_BASE))
+        print('Waiting for user to select folder...')
+        print(self.current_base)
+        print(self.mainwindow.settings['paths'].get('raw_data_folder', RAW_DATA_BASE))
+        try:
+            folder_path = QFileDialog.getExistingDirectory(
+                        self,
+                        "Select Raw Data Folder")
+        except:
+            print('Bad browse attempt')
+        print('Checking good folder path...')
         if folder_path:
             self.load_data(folder_path)
             if self.data_files:
-                self.mainwindow.settings['data_folder'] = folder_path
+                self.mainwindow.settings['paths']['raw_data_folder'] = folder_path
                 save_settings(self.mainwindow.settings)
 
     def load_data(self, folder_path):
@@ -578,7 +591,7 @@ class FilePage(QWidget):
         # Walks directory to collect CSV files matching pattern, organizes by year/month/day/time.
         # Uses os.walk, which is cross-platform for file system traversal.
         data_files = {}
-        pattern = r'(\d{4}-\d{2}-\d{2})_test_(\d{6})\.csv'
+        pattern = r'(\d{4}-\d{2}-\d{2})_(\d{6})_(\d{2})\.csv'
         for root, dirs, files in os.walk(base_path):
             date = os.path.basename(root)
             if re.match(r'\d{4}-\d{2}-\d{2}', date):
@@ -660,7 +673,7 @@ class FilePage(QWidget):
 
             settings = load_settings()
             sensors_str = ','.join(data.sensor_labels)
-            if settings.get('independent_plots', False):
+            if settings['ui_preferences'].get('independent_plots', False):
                 data.plot_raw_strains(sensors=sensors_str)
                 plt.show()
             else:
@@ -774,23 +787,29 @@ class MainWindow(QMainWindow):
         # Opens preferences dialog, applies changes, and resizes if needed.
         dialog = SettingsDialog(self)
         if dialog.exec_() == QDialog.Accepted:
-            self.settings['independent_plots'] = dialog.independent_plots_checkbox.isChecked()
-            self.settings['screen_width'] = dialog.screen_width_spinbox.value()
-            self.settings['detect_screen_size'] = dialog.detect_screen_size_checkbox.isChecked()
-            self.settings['adc_config'] = dialog.adc_config_edit.text()
-            self.settings['daq_config'] = dialog.daq_config_edit.text()
+            self.settings['ui_preferences']['independent_plots'] = dialog.independent_plots_checkbox.isChecked()
+            self.settings['ui_preferences']['screen_width'] = dialog.screen_width_spinbox.value()
+            self.settings['ui_preferences']['detect_screen_size'] = dialog.detect_screen_size_checkbox.isChecked()
+            self.settings['hardware_config']['adc_config'] = dialog.adc_config_edit.text()
+            self.settings['hardware_config']['daq_config'] = dialog.daq_config_edit.text()
             self.settings['sensors'] = dialog.get_sensors()
             save_settings(self.settings)
-            # Resize and rescale based on new settings (cross-platform via size_window).
-            self.size_window()
+            self.size_window()  # Apply screen changes
 
     def go_to_collect(self):
         self.stack.setCurrentIndex(1)
 
     def go_to_processing(self):
         # Navigates to file page, loads data.
-        path = self.settings.get('data_folder', RAW_DATA_BASE)
-        self.file_page.load_data(path)
+        try:
+            path = self.settings['paths'].get('raw_data_folder', RAW_DATA_BASE)
+            self.file_page.load_data(path)
+        except:
+            self.settings['paths'] = {}
+            self.settings['paths']['raw_data_folder'] = RAW_DATA_BASE
+            save_settings(self.settings)
+            path = self.settings['paths'].get('raw_data_folder', RAW_DATA_BASE)
+            self.file_page.load_data(path)
         self.stack.setCurrentIndex(2)
 
     def go_to_home(self):
@@ -806,10 +825,10 @@ class MainWindow(QMainWindow):
         actual_width = self.screen_size.width()
 
         # Determine width based on settings.
-        if self.settings.get('detect_screen_size', True):
+        if self.settings['ui_preferences'].get('detect_screen_size', True):
             use_width = actual_width
         else:
-            use_width = self.settings.get('screen_width', 1920)
+            use_width = self.settings['ui_preferences'].get('screen_width', 1920)
         self.screen_scale = use_width / self.design_screen['width']
 
         # Set height for 16:9 aspect, center on screen.
@@ -981,19 +1000,36 @@ class MainWindow(QMainWindow):
             self.showFullScreen()
 
 def load_settings():
-    # Loads settings from JSON, defaults if file missing (cross-platform file I/O).
     if os.path.exists(SETTINGS_FILE):
         with open(SETTINGS_FILE, 'r') as f:
             return json.load(f)
-    return {'independent_plots': False, 'screen_width': 1920, 'data_folder': RAW_DATA_BASE, 'detect_screen_size': True,
+    # Default nested structure
+    return {
+        'ui_preferences': {
+            'independent_plots': False,
+            'detect_screen_size': True,
+            'screen_width': 1920
+        },
+        'hardware_config': {
             'adc_config': "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_90SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
-            'daq_config': "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi",
-            'sensors': [], 'custom_test_types': [], 'last_num_sensors': 5, 'last_labels': ['A', 'B', 'C', 'D', 'E'], 'last_sns': []}
+            'daq_config': "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano_01, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"
+        },
+        'sensors': [],  # List of sensor dicts
+        'test_config': {
+            'custom_test_types': [],
+            'parameters_by_type': {}  # e.g., {'Force Cycle': {'default_force': '20N', ...}}
+        },
+        'session_state': {
+            'last_num_sensors': 5,
+            'last_labels': ['A', 'B', 'C', 'D', 'E'],
+            'last_sns': []
+        }
+    }
 
 def save_settings(settings):
     # Saves settings to JSON (cross-platform).
     with open(SETTINGS_FILE, 'w') as f:
-        json.dump(settings, f)
+        json.dump(settings, f, indent=2)
 
 def set_dark_mode(app):
     # Sets dark palette for app (QPalette is cross-platform, works on Windows/Linux/Pi for consistent theme).

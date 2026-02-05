@@ -9,6 +9,7 @@ import pyqtgraph as pg
 import requests
 import argparse
 from PyQt5 import QtWidgets, QtCore
+from http.server import BaseHTTPRequestHandler, HTTPServer
 
 # === ADS1220 parameters ===
 ADS1220_BITS = 23  # True resolution in differential mode (signed)
@@ -20,16 +21,16 @@ VOLTS_PER_LSB = VREF / (ADS1220_PGA_GAIN * TWO_TO_23)
 # === Plotting parameters ===
 PLOT_REFRESH_HZ = 30  # Refresh rate for plot updates in Hz
 
-# Hardcoded WiFi parameters
-WIFI_IP = "192.168.4.1"
-WIFI_PORT = 80
-WIFI_URL = f"http://{WIFI_IP}:{WIFI_PORT}/"
+# Hardcoded WiFi parameters (now for host server)
+HOST_IP = "10.37.29.76"
+HOST_PORT = 80
+HOST_URL = f"http://{HOST_IP}:{HOST_PORT}/data"
 # Hardcoded paths (adjust as needed for your environment) - os.path ensures cross-platform path handling
 CALIBRATION_PATH = r'Hi-STIFFS_2026_Winter/AllInOne/calibration_history.csv'
 RAW_DATA_BASE = r'Hi-STIFFS_2026_Winter/Raw Data'
 
 class DataReceiverWriter(QtCore.QThread):
-    """Thread for receiving WiFi data, processing to volts, writing to CSV, and emitting signals to other threads."""
+    """Thread for hosting a server to receive WiFi data from Nano, processing to volts, writing to CSV, and emitting signals to other threads."""
 
     data_ready = QtCore.pyqtSignal(list)  # Emits flat list [time_0, strain_01_v, strain_02_v, time_1, strain_11_v, strain_12_v, ...]
     status_signal = QtCore.pyqtSignal(str)  # For status messages
@@ -38,14 +39,14 @@ class DataReceiverWriter(QtCore.QThread):
     def __init__(self, save_format, num_sensors, sensor_labels, header_content=None):  # Made header_content optional with default None
         super().__init__()
         
-        print(f"Datastream status:")
+        nano_label = '01'
+        print(f"Datastream from Nano {nano_label} status:")
         self.num_sensors = num_sensors
         self.sensor_labels = sensor_labels
         self.save_format = save_format
         self.running = True
         self.packet_times = collections.deque(maxlen=10000)  # Timestamps of received packets
         self.last_rate_time = time.time()
-        self.sess = requests.Session()
 
         # Create CSV file - os.makedirs and os.path.join ensure cross-platform directory creation and path compatibility
         now = datetime.datetime.now()
@@ -53,19 +54,19 @@ class DataReceiverWriter(QtCore.QThread):
         time_str = now.strftime("%H%M%S")
         parent_folder = os.path.join(RAW_DATA_BASE, date_str)
         os.makedirs(parent_folder, exist_ok=True)
-        csv_path = os.path.join(parent_folder, f'{date_str}_test_{time_str}.csv')
+        csv_path = os.path.join(parent_folder, f'{date_str}__{time_str}__{nano_label}.csv')  # Added _01 suffix
         self.csvfile = open(csv_path, 'w', newline='')
         self.csvwriter = csv.writer(self.csvfile)
-        print(f"Created CSV at:\t{csv_path}")
+        print(f"Created CSV for Nano_{nano_label} at:\t{csv_path}")
 
         print(f"Writing metadata to CSV...")
         self.csvwriter.writerow(['===BEGIN_METADATA==='])
         # Handle header_content: If None (e.g., standalone run), use minimal defaults; GUI will provide full list
         if header_content is None:
             header_content = []  # Empty default; add minimal required for standalone
-            for l in self.sensor_labels:
-                header_content.insert(0, f'Test Name: {date_str}_test_{time_str}, yyyy-mm-dd_test_hhmmss')
-                header_content += [f"ICB-Sensor {l}'s Latest Calibration: N/A, k{l}1: 1.0, d{l}1: 1.0, c{l}1: 1.0, k{l}2: 1.0, d{l}2: 1.0, c{l}2: 1.0"]
+        for l in self.sensor_labels:
+            header_content.insert(0, f'Test Name: {date_str}_test_{time_str}, yyyy-mm-dd_test_hhmmss')
+            header_content += [f"ICB-Sensor {l}'s Latest Calibration: N/A, k{l}1: 1.0, d{l}1: 1.0, c{l}1: 1.0, k{l}2: 1.0, d{l}2: 1.0, c{l}2: 1.0"]
         for row in header_content:
             row = row.split(', ')
             self.csvwriter.writerow(row)
@@ -75,94 +76,105 @@ class DataReceiverWriter(QtCore.QThread):
         print(f"Writing data headers to CSV...")
         data_headers = []
         for l in self.sensor_labels:
-            if save_format == 'volts':
-                data_headers += [f'Time_{l}_sec', f'Strain_{l}1_V', f'Strain_{l}2_V']
-            else:
-                data_headers += [f'Time_{l}_sec', f'Strain_{l}1_raw', f'Strain_{l}2_raw']
+            data_headers += [f'Time_{l}_sec', f'Strain_{l}1_raw', f'Strain_{l}2_raw']
         data_headers += ['Processed_Time']
         self.csvwriter.writerow(data_headers)
 
         print('CSV file opened for writing.')
 
     def run(self):
-        print("Starting collection...")
+        print("Starting server...")
+        class DataHandler(BaseHTTPRequestHandler):
+            def __init__(self, *args, thread=None, **kwargs):
+                self.thread = thread
+                super().__init__(*args, **kwargs)
+
+            def do_POST(self):
+                content_length = int(self.headers['Content-Length'])
+                post_data = self.rfile.read(content_length).decode('utf-8').strip()
+                if not post_data:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+
+                data = post_data.split(',')
+                if len(data) != self.thread.num_sensors * 3 + 1:  # Nano_ID + time,ch1,ch2 per sensor
+                    self.thread.status_signal.emit(f"Invalid data packet of len:{len(data)}. Expected len:{self.thread.num_sensors*3 + 1}")
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+
+                nano_id = data[0]
+                if nano_id != "01":  # For now, only accept from "01"
+                    self.thread.status_signal.emit(f"Unexpected Nano ID: {nano_id}")
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+
+                try:
+                    times = []
+                    volts1 = []
+                    volts2 = []
+                    raws1 = []
+                    raws2 = []
+                    for i in range(self.thread.num_sensors):
+                        time_sec = float(data[i * 3 + 1])
+                        raw1 = int(data[i * 3 + 2])
+                        raw2 = int(data[i * 3 + 3])
+                        v1 = raw1 * VOLTS_PER_LSB
+                        v2 = raw2 * VOLTS_PER_LSB
+                        times.append(time_sec)
+                        volts1.append(v1)
+                        volts2.append(v2)
+                        raws1.append(raw1)
+                        raws2.append(raw2)
+                except (ValueError, IndexError):
+                    self.thread.status_signal.emit("Cannot parse data")
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+
+                self.thread.packet_times.append(time.time())  # Record packet arrival time
+
+                now = datetime.datetime.now()
+                row = []
+                if self.thread.save_format == 'volts':
+                    for j in range(self.thread.num_sensors):
+                        row += [f"{times[j]:.6f}", volts1[j], volts2[j]]
+                else:
+                    for j in range(self.thread.num_sensors):
+                        row += [f"{times[j]:.6f}", f"{raws1[j]:+08d}", f"{raws2[j]:+08d}"]
+                row += [now.time()]
+                self.thread.csvwriter.writerow(row)
+                self.thread.csvfile.flush()
+
+                # Emit data for plotting (always in volts, flat list)
+                emit_list = []
+                for j in range(self.thread.num_sensors):
+                    emit_list += [times[j], volts1[j], volts2[j]]
+                self.thread.data_ready.emit(emit_list)
+
+                # Update input rate periodically
+                current_time = time.time()
+                if current_time - self.thread.last_rate_time > 1.0:
+                    if self.thread.packet_times:
+                        recent_count = sum(1 for t in self.thread.packet_times if current_time - t <= 3.0)
+                        rate = recent_count / 3.0
+                        self.thread.rate_updated.emit(rate)
+                    self.thread.last_rate_time = current_time
+
+                self.send_response(200)
+                self.end_headers()
+
+        def handler(*args):
+            DataHandler(*args, thread=self)
+
+        server = HTTPServer((HOST_IP, HOST_PORT), handler)
+        print(f"Server started at {HOST_URL}")
         while self.running:
-            try:
-                print(f'Connecting to Wi-Fi at:\t{WIFI_URL}')
-                response = self.sess.get(WIFI_URL, stream=True, timeout=5)
-                if response.status_code != 200:
-                    self.status_signal.emit(f"Connection failed: {response.status_code}")
-                    time.sleep(1)
-                    continue
-                print("Wi-Fi connected. Reading packet datastream...")
-                for line in response.iter_lines(chunk_size=1):
-                    if not self.running:
-                        break
+            server.handle_request()
 
-                    line_str = line.decode('utf-8', errors='ignore').strip()
-                    if not line_str:
-                        continue
-
-                    data = line_str.split(',')
-                    if len(data) != self.num_sensors * 3:  # time, channel 1, channel 2 for each sensor
-                        self.status_signal.emit(f"Invalid data packet of len:{len(data)}. Expected len:{self.num_sensors*3}")
-                        continue
-
-                    try:
-                        times = []
-                        volts1 = []
-                        volts2 = []
-                        raws1 = []
-                        raws2 = []
-                        for i in range(self.num_sensors):
-                            time_sec = float(data[i * 3])
-                            raw1 = int(data[i * 3 + 1])
-                            raw2 = int(data[i * 3 + 2])
-                            v1 = raw1 * VOLTS_PER_LSB
-                            v2 = raw2 * VOLTS_PER_LSB
-                            times.append(time_sec)
-                            volts1.append(v1)
-                            volts2.append(v2)
-                            raws1.append(raw1)
-                            raws2.append(raw2)
-                    except (ValueError, IndexError):
-                        self.status_signal.emit("Cannot parse data")
-                        continue
-
-                    self.packet_times.append(time.time())  # Record packet arrival time
-
-                    now = datetime.datetime.now()
-                    row = []
-                    if self.save_format == 'volts':
-                        for j in range(self.num_sensors):
-                            row += [f"{times[j]:.6f}", volts1[j], volts2[j]]
-                    else:
-                        for j in range(self.num_sensors):
-                            row += [f"{times[j]:.6f}", f"{raws1[j]:+08d}", f"{raws2[j]:+08d}"]
-                    row += [now.time()]
-                    self.csvwriter.writerow(row)
-                    self.csvfile.flush()
-
-                    # Emit data for plotting (always in volts, flat list)
-                    emit_list = []
-                    for j in range(self.num_sensors):
-                        emit_list += [times[j], volts1[j], volts2[j]]
-                    self.data_ready.emit(emit_list)
-
-                    # Update input rate periodically
-                    current_time = time.time()
-                    if current_time - self.last_rate_time > 1.0:
-                        if self.packet_times:
-                            recent_count = sum(1 for t in self.packet_times if current_time - t <= 3.0)
-                            rate = recent_count / 3.0
-                            self.rate_updated.emit(rate)
-                        self.last_rate_time = current_time
-
-            except requests.exceptions.RequestException as e:
-                self.status_signal.emit(f"Connection error: {str(e)}. Reconnecting...")
-                time.sleep(1)
-        
-        print("Exited datastream loop. Wi-Fi connection closed.")
+        print("Exited server loop.")
         self.csvfile.close()
         print("CSV file closed.")
 
@@ -309,7 +321,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
 
             # Calculate force and position
             force = 0# (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i])) / (self.k1[i] * self.k2[i] * (self.d2[i] - self.d1[i]))
-            num = 0# (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i])) 
+            num = 0# (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
             den = 0# (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
             position = 0# num / den if abs(den) > 2.5e-5 else 0.0
             position = 0# 0.0 if position > 0.25 or position < -0.10 else position
@@ -402,7 +414,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Data collection from WiFi stream")
     parser.add_argument('--save-format', choices=['volts', 'raw'], default='raw', help="Format to save strains in CSV: volts or raw")
     parser.add_argument('--plot', type=bool, default=True, help="Enable live plotting")
-    parser.add_argument('--sensors', default='A, B', help="Number of sensors (1-5) or comma-separated labels (e.g., 'A,C,E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
+    parser.add_argument('--sensors', default='A, B, C', help="Number of sensors (1-5) or comma-separated labels (e.g., 'A,C,E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
     args = parser.parse_args()
 
     # For standalone: Use example header_content (GUI will override with dynamic list)

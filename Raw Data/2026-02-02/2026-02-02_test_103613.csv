@@ -1,9 +1,0 @@
-===BEGIN_METADATA===
-Test Type: Dummy
-Number of ICB-Sensors: 1,Sensor Label(s): A
-ICB-Sensor A's Serial#: ,Length: ,Spacing: ,Saturation Load: ,Factor of Safety at Saturation: 
-Analog-to-Digital Converter: ADS1220,Mode: Turbo,Data Rate: DR_90SPS,Analog Excitation/Reference Voltage: 5.1V +/-2mV
-DAQ Microcontroller: Arduino Nano ESP32,ID: Hi-STIFFS_Nano,CPU Clock: 240MHz,Cores: 2,Data-stream Connection: Wi-Fi
-===END_METADATA===
-===BEGIN_DATA===
-Time_A_sec,Strain_A1_raw,Strain_A2_raw,Processed_Time
