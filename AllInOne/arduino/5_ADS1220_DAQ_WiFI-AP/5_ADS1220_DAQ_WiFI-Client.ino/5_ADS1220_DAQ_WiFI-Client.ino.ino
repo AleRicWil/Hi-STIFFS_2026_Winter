@@ -57,15 +57,15 @@
 //      - The _raw values are the 24-bit signed integers directly from the ADC (sign-extended to 32-bit for printing).
 //        Previously, these were converted to mV using the formula: (float(val) * VREF / PGA_GAIN / (1LL<<23)) * 1000.0f,
 //        but now we send the raw integers for flexibility (conversion can be done later if needed).
-//      - Now outputs over WiFi using Server-Sent Events (SSE) on a simple HTTP server (port 80) for continuous streaming.
-//        Connect via browser or client to http://<SoftAP_IP> (default 192.168.4.1) to receive real-time updates.
+//      - Now outputs over WiFi using client HTTP POST to a host server (port 80) for streaming.
+//        The Nano connects as a WiFi client to the host's AP.
 //      - Serial output retained for debugging (with timeout to avoid blocking if no USB connected).
-//      - Justification: Enables untethered field operation; SSE provides efficient, non-blocking streaming compatible with Python clients.
+//      - Justification: Enables untethered field operation; HTTP POST provides efficient, non-blocking streaming compatible with Python servers.
 //        High baud rate serial fallback for wired debugging.
 //    - Wireless Features:
-//      - SoftAP mode: Nano creates its own WiFi network (configurable SSID/password) for direct connection without router.
+//      - Station mode: Nano connects to host's WiFi network (configurable SSID/password).
 //      - OTA: Supports over-the-air sketch uploads via WiFi for wireless updates.
-//      - Power Impact: SoftAP adds ~100-200mA draw; monitor for battery-powered setups (see Nano ESP32 manual, Section 11).
+//      - Power Impact: Station mode adds ~80-150mA draw; monitor for battery-powered setups (see Nano ESP32 manual, Section 11).
 //    - Other Settings: 
 //      - PGA=128 (Programmable Gain Amplifier), internal VREF=2.048V (from datasheet). Continuous mode for steady sampling.
 //    - Interrupt Handling: 
@@ -84,25 +84,27 @@
 //    This software is licensed under the MIT License (as in original library).
 //
 //    Updated Architecture (2026):
-//    - Finite State Machine (FSM): Manages connection states to listen for clients only when idle,
-//      send data when connected, and handle Serial presence determined at setup. States: LISTENING,
+//    - Finite State Machine (FSM): Manages connection states to attempt connection when idle,
+//      send data when connected, and handle Serial presence determined at setup. States: CONNECTING,
 //      CONNECTED, SERIAL_ONLY, NO_SERIAL. This ensures efficient resource use on Nano ESP32.
 //    - Modular Functions: Broke out key operations (e.g., OTA handling, DRDY processing, data sending)
 //      for tight, efficient code. Prepares for higher data rates by minimizing loop overhead.
 //    - OTA Restriction: Disabled during active connections to prevent disruptions.
 //    - ADC Reset: On new connection, reset ADCs and timestamps for session synchronization.
-//    - Error Gracefulness: Added checks for missed DRDY (e.g., skip if flag not set), client errors
-//      (stay in state), and suppressed Serial if absent to avoid blocking.
+//    - Error Gracefulness: Added checks for missed DRDY (e.g., skip if flag not set), connection errors
+//      (retry), and suppressed Serial if absent to avoid blocking.
 //    - Efficiency for Nano ESP32: Used IRAM_ATTR for ISRs, non-blocking loops, conditional debug
 //      prints. Aligned with PDF specs (e.g., low power notes for future optimizations, pin capabilities).
 //    - Future-Proofing: Code structure allows easy data rate increases (e.g., to DR_1000SPS in turbo,
 //      ~2000 SPS total) once tested; focus on tight execution to handle higher interrupt rates.
+//    - Multi-Nano Compatibility: Each Nano has a unique ID (NANO_ID) sent in data packets.
+//      Host handles aggregation; no changes here for multi-Nano beyond ID inclusion.
 //
 /////////////////////////////////////////////////////////////////////////////////////////
 
 #include "Protocentral_ADS1220.h"
 #include <SPI.h>
-#include <WiFi.h>       // For WiFi SoftAP
+#include <WiFi.h>       // For WiFi Station mode
 #include <ArduinoOTA.h> // For Over-The-Air updates
 
 #define FULL_SCALE (1LL << 23) // 2^23 for 24-bit signed scaling - retained for reference, though not used in raw output
@@ -118,17 +120,21 @@
 #define E_CS_PIN A6
 
 const int MAX_SENSORS = 5;     // Maximum possible sensors (A to E)
-const int NUM_SENSORS = 2;     // Set to 1-5 to use the first N sensors from all_configs below.
+const int NUM_SENSORS = 3;     // Set to 1-5 to use the first N sensors from all_configs below.
 const uint8_t dr_code = DR_90SPS;  // Data Rate value. In turbo, value is for pairs/sec. In normal, value is for samples/sec
 const SPISettings spi_settings(2000000, MSBFIRST, SPI_MODE1);
 
-// WiFi access point
-const char* ssid = "Hi-STIFFS_Nano";       // WiFi network name (SSID) - choose something unique
-const char* password = "BYUCropBio";       // WiFi password (minimum 8 characters)
+// WiFi access point to connect to (host's AP)
+const char* ssid = "Hi-STIFFS_Host";       // Host WiFi network name (SSID) - choose something unique
+const char* password = "BYUCropBio";       // Host WiFi password (minimum 8 characters)
 const char* ota_password = "BYUCropBio";   // Optional OTA password for security (change this)
-// WiFi server for SSE streaming
-WiFiServer server(80);
-WiFiClient streamingClient;  // Global client for ongoing SSE connection
+// Host server details
+const char* host_ip = "10.37.29.76";       // IPv4 of the host server (e.g., Raspberry Pi or laptop), from device settings, not Python code
+const int host_port = 80;                  // Port on host for data streaming
+WiFiClient client;                         // Global client for sending data to host
+
+// Unique Nano ID (2-digit, e.g., "01" to "99")
+const char* NANO_ID = "01";                // Assign per Nano; for now, fixed to "01"
 
 struct SensorConfig {
   char id;                     // Sensor ID ('A', 'B', etc.)
@@ -151,8 +157,9 @@ int32_t raw_values[MAX_SENSORS][2];                 // [sensor][channel]: raw 24
 unsigned long timestamps[MAX_SENSORS];              // Per-chip timestamps for each pair
 uint8_t current_channels[MAX_SENSORS] = {0};        // Indicates which MUX channel to read from for an ADS1220 module
 volatile uint8_t ready_mask = 0;                    // Bitmask tracking ready sensors (bit i set to (1) when sensor i pair is complete)
-unsigned long time_init;                            // t=0 of datastream. Set each time Wi-Fi client initiates datastream
+unsigned long time_init;                            // t=0 of datastream. Set each time connection initiates datastream
 const unsigned long WiFi_CHECK_INTERVAL_MS = 1000;  // 1 Hz
+const unsigned long WiFi_RETRY_DELAY_MS = 5000;     // Retry connection every 5s if failed
 
 // FSM States
 enum State_Serial {
@@ -162,10 +169,10 @@ enum State_Serial {
 State_Serial SerialState;
 
 enum State_WiFi {
-  LISTENING,    // No active client, listening for connections
-  CONNECTED,    // Active client, sending data, no listening/OTA
+  CONNECTING,   // Attempting to connect to host AP
+  CONNECTED,    // Connected to host, sending data
 };
-State_WiFi WiFiState;
+State_WiFi WiFiState = CONNECTING;
 
 // Global flag for Serial presence, set in setup
 bool hasSerial = false;
@@ -182,7 +189,7 @@ void IRAM_ATTR handleDrdyA() {
                                             // Technically the time when the interrupt is processed, as interrupts on same core of same priority form queue
   // Open SPI with sensor's ADS1220 chip/module
   SPI.beginTransaction(spi_settings);       // Get SPI open with settings
-  digitalWrite(A_CS_PIN, LOW);                // Select particular sensor (cs='chip select')
+  digitalWrite(A_CS_PIN, LOW);              // Select particular sensor (cs='chip select')
   delayMicroseconds(1);                     // Allow ADS1220 module to accept connection (50ns on datasheet)
   // Retrieve 3 byte (24-bit) ADC result
   byte SPI_Buf[3];                          // temporary local buffer to work with raw result before storing integer value
@@ -191,19 +198,11 @@ void IRAM_ATTR handleDrdyA() {
   SPI_Buf[2] = SPI.transfer(0);
   delayMicroseconds(1);                     // Allow communication to finish
   // Close SPI
-  digitalWrite(A_CS_PIN, HIGH);               // Release sensor from SPI
+  digitalWrite(A_CS_PIN, HIGH);             // Release sensor from SPI
   SPI.endTransaction();                     // Release Nano's SPI bus
 
   long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2]; // Assemble 3 bytes into single 24-bit object (using 32-bit datatype)
   int32_t val = (bits24 << 8) >> 8;                                          // Sign-extend 24-bit to 32-bit. Copy sign bit 23 to bits 31-24 
-
-  // // Corruption detection (expanded per datasheet valid range: -2^23 to 2^23-1)
-  // if (val == -1 || val == 0 || abs(val) > 8388607LL) {
-  //   adcs[i].select_mux_channels(MUX_AIN0_AIN1);  // Reset to ch1
-  //   current_channels[i] = 0;
-  //   ready_mask |= (0 << i);  // mark sensor's bit in bitmask as not-ready (0)
-  //   return;  // Skip this read (creates data hole)
-  // }
 
   // ADS1220 can only store one value, so manually switch and track between channels
   if (current_channels[i] == 0) {
@@ -221,36 +220,24 @@ void IRAM_ATTR handleDrdyA() {
     ready_mask |= (1 << i);
   }
 }
+
 void IRAM_ATTR handleDrdyB() {
-  const int i = 1;                          // Array index of sensor
-  unsigned long interrupt_time = micros();  // Record the time the ADC value was reported by DRDY interrupt pin. 
-                                            // Technically the time when the interrupt is processed, as interrupts on same core of same priority form queue
-  // Open SPI with sensor's ADS1220 chip/module
-  SPI.beginTransaction(spi_settings);       // Get SPI open with settings
-  digitalWrite(B_CS_PIN, LOW);                // Select particular sensor (cs='chip select')
-  delayMicroseconds(1);                     // Allow ADS1220 module to accept connection (50ns on datasheet)
-  // Retrieve 3 byte (24-bit) ADC result
-  byte SPI_Buf[3];                          // temporary local buffer to work with raw result before storing integer value
-  SPI_Buf[0] = SPI.transfer(0);             // Send dummy 0x00 byte on MOSI and receive one conversion byte on MISO
+  const int i = 1;
+  unsigned long interrupt_time = micros();
+  SPI.beginTransaction(spi_settings);
+  digitalWrite(B_CS_PIN, LOW);
+  delayMicroseconds(1);
+  byte SPI_Buf[3];
+  SPI_Buf[0] = SPI.transfer(0);
   SPI_Buf[1] = SPI.transfer(0);
   SPI_Buf[2] = SPI.transfer(0);
-  delayMicroseconds(1);                     // Allow communication to finish
-  // Close SPI
-  digitalWrite(B_CS_PIN, HIGH);               // Release sensor from SPI
-  SPI.endTransaction();                     // Release Nano's SPI bus
+  delayMicroseconds(1);
+  digitalWrite(B_CS_PIN, HIGH);
+  SPI.endTransaction();
 
-  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2]; // Assemble 3 bytes into single 24-bit object (using 32-bit datatype)
-  int32_t val = (bits24 << 8) >> 8;                                          // Sign-extend 24-bit to 32-bit. Copy sign bit 23 to bits 31-24 
+  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2];
+  int32_t val = (bits24 << 8) >> 8;
 
-  // // Corruption detection (expanded per datasheet valid range: -2^23 to 2^23-1)
-  // if (val == -1 || val == 0 || abs(val) > 8388607LL) {
-  //   adcs[i].select_mux_channels(MUX_AIN0_AIN1);  // Reset to ch1
-  //   current_channels[i] = 0;
-  //   ready_mask |= (0 << i);  // mark sensor's bit in bitmask as not-ready (0)
-  //   return;  // Skip this read (creates data hole)
-  // }
-
-  // ADS1220 can only store one value, so manually switch and track between channels
   if (current_channels[i] == 0) {
     raw_values[i][0] = val;
     adcs[i].select_mux_channels(MUX_AIN2_AIN3);
@@ -260,42 +247,28 @@ void IRAM_ATTR handleDrdyB() {
     raw_values[i][1] = val;
     adcs[i].select_mux_channels(MUX_AIN0_AIN1);
     current_channels[i] = 0;
-
-    // When second channel is read, record time and mark sensor's bit in bitmask as ready (1)
     timestamps[i] = interrupt_time - time_init;
     ready_mask |= (1 << i);
   }
 }
+
 void IRAM_ATTR handleDrdyC() {
-  const int i = 2;                          // Array index of sensor
-  unsigned long interrupt_time = micros();  // Record the time the ADC value was reported by DRDY interrupt pin. 
-                                            // Technically the time when the interrupt is processed, as interrupts on same core of same priority form queue
-  // Open SPI with sensor's ADS1220 chip/module
-  SPI.beginTransaction(spi_settings);       // Get SPI open with settings
-  digitalWrite(C_CS_PIN, LOW);                // Select particular sensor (cs='chip select')
-  delayMicroseconds(1);                     // Allow ADS1220 module to accept connection (50ns on datasheet)
-  // Retrieve 3 byte (24-bit) ADC result
-  byte SPI_Buf[3];                          // temporary local buffer to work with raw result before storing integer value
-  SPI_Buf[0] = SPI.transfer(0);             // Send dummy 0x00 byte on MOSI and receive one conversion byte on MISO
+  const int i = 2;
+  unsigned long interrupt_time = micros();
+  SPI.beginTransaction(spi_settings);
+  digitalWrite(C_CS_PIN, LOW);
+  delayMicroseconds(1);
+  byte SPI_Buf[3];
+  SPI_Buf[0] = SPI.transfer(0);
   SPI_Buf[1] = SPI.transfer(0);
   SPI_Buf[2] = SPI.transfer(0);
-  delayMicroseconds(1);                     // Allow communication to finish
-  // Close SPI
-  digitalWrite(C_CS_PIN, HIGH);               // Release sensor from SPI
-  SPI.endTransaction();                     // Release Nano's SPI bus
+  delayMicroseconds(1);
+  digitalWrite(C_CS_PIN, HIGH);
+  SPI.endTransaction();
 
-  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2]; // Assemble 3 bytes into single 24-bit object (using 32-bit datatype)
-  int32_t val = (bits24 << 8) >> 8;                                          // Sign-extend 24-bit to 32-bit. Copy sign bit 23 to bits 31-24 
+  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2];
+  int32_t val = (bits24 << 8) >> 8;
 
-  // // Corruption detection (expanded per datasheet valid range: -2^23 to 2^23-1)
-  // if (val == -1 || val == 0 || abs(val) > 8388607LL) {
-  //   adcs[i].select_mux_channels(MUX_AIN0_AIN1);  // Reset to ch1
-  //   current_channels[i] = 0;
-  //   ready_mask |= (0 << i);  // mark sensor's bit in bitmask as not-ready (0)
-  //   return;  // Skip this read (creates data hole)
-  // }
-
-  // ADS1220 can only store one value, so manually switch and track between channels
   if (current_channels[i] == 0) {
     raw_values[i][0] = val;
     adcs[i].select_mux_channels(MUX_AIN2_AIN3);
@@ -305,42 +278,28 @@ void IRAM_ATTR handleDrdyC() {
     raw_values[i][1] = val;
     adcs[i].select_mux_channels(MUX_AIN0_AIN1);
     current_channels[i] = 0;
-
-    // When second channel is read, record time and mark sensor's bit in bitmask as ready (1)
     timestamps[i] = interrupt_time - time_init;
     ready_mask |= (1 << i);
   }
 }
+
 void IRAM_ATTR handleDrdyD() {
-  const int i = 3;                          // Array index of sensor
-  unsigned long interrupt_time = micros();  // Record the time the ADC value was reported by DRDY interrupt pin. 
-                                            // Technically the time when the interrupt is processed, as interrupts on same core of same priority form queue
-  // Open SPI with sensor's ADS1220 chip/module
-  SPI.beginTransaction(spi_settings);       // Get SPI open with settings
-  digitalWrite(D_CS_PIN, LOW);                // Select particular sensor (cs='chip select')
-  delayMicroseconds(1);                     // Allow ADS1220 module to accept connection (50ns on datasheet)
-  // Retrieve 3 byte (24-bit) ADC result
-  byte SPI_Buf[3];                          // temporary local buffer to work with raw result before storing integer value
-  SPI_Buf[0] = SPI.transfer(0);             // Send dummy 0x00 byte on MOSI and receive one conversion byte on MISO
+  const int i = 3;
+  unsigned long interrupt_time = micros();
+  SPI.beginTransaction(spi_settings);
+  digitalWrite(D_CS_PIN, LOW);
+  delayMicroseconds(1);
+  byte SPI_Buf[3];
+  SPI_Buf[0] = SPI.transfer(0);
   SPI_Buf[1] = SPI.transfer(0);
   SPI_Buf[2] = SPI.transfer(0);
-  delayMicroseconds(1);                     // Allow communication to finish
-  // Close SPI
-  digitalWrite(D_CS_PIN, HIGH);               // Release sensor from SPI
-  SPI.endTransaction();                     // Release Nano's SPI bus
+  delayMicroseconds(1);
+  digitalWrite(D_CS_PIN, HIGH);
+  SPI.endTransaction();
 
-  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2]; // Assemble 3 bytes into single 24-bit object (using 32-bit datatype)
-  int32_t val = (bits24 << 8) >> 8;                                          // Sign-extend 24-bit to 32-bit. Copy sign bit 23 to bits 31-24 
+  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2];
+  int32_t val = (bits24 << 8) >> 8;
 
-  // // Corruption detection (expanded per datasheet valid range: -2^23 to 2^23-1)
-  // if (val == -1 || val == 0 || abs(val) > 8388607LL) {
-  //   adcs[i].select_mux_channels(MUX_AIN0_AIN1);  // Reset to ch1
-  //   current_channels[i] = 0;
-  //   ready_mask |= (0 << i);  // mark sensor's bit in bitmask as not-ready (0)
-  //   return;  // Skip this read (creates data hole)
-  // }
-
-  // ADS1220 can only store one value, so manually switch and track between channels
   if (current_channels[i] == 0) {
     raw_values[i][0] = val;
     adcs[i].select_mux_channels(MUX_AIN2_AIN3);
@@ -350,42 +309,28 @@ void IRAM_ATTR handleDrdyD() {
     raw_values[i][1] = val;
     adcs[i].select_mux_channels(MUX_AIN0_AIN1);
     current_channels[i] = 0;
-
-    // When second channel is read, record time and mark sensor's bit in bitmask as ready (1)
     timestamps[i] = interrupt_time - time_init;
     ready_mask |= (1 << i);
   }
 }
+
 void IRAM_ATTR handleDrdyE() {
-  const int i = 4;                          // Array index of sensor
-  unsigned long interrupt_time = micros();  // Record the time the ADC value was reported by DRDY interrupt pin. 
-                                            // Technically the time when the interrupt is processed, as interrupts on same core of same priority form queue
-  // Open SPI with sensor's ADS1220 chip/module
-  SPI.beginTransaction(spi_settings);       // Get SPI open with settings
-  digitalWrite(E_CS_PIN, LOW);                // Select particular sensor (cs='chip select')
-  delayMicroseconds(1);                     // Allow ADS1220 module to accept connection (50ns on datasheet)
-  // Retrieve 3 byte (24-bit) ADC result
-  byte SPI_Buf[3];                          // temporary local buffer to work with raw result before storing integer value
-  SPI_Buf[0] = SPI.transfer(0);             // Send dummy 0x00 byte on MOSI and receive one conversion byte on MISO
+  const int i = 4;
+  unsigned long interrupt_time = micros();
+  SPI.beginTransaction(spi_settings);
+  digitalWrite(E_CS_PIN, LOW);
+  delayMicroseconds(1);
+  byte SPI_Buf[3];
+  SPI_Buf[0] = SPI.transfer(0);
   SPI_Buf[1] = SPI.transfer(0);
   SPI_Buf[2] = SPI.transfer(0);
-  delayMicroseconds(1);                     // Allow communication to finish
-  // Close SPI
-  digitalWrite(E_CS_PIN, HIGH);               // Release sensor from SPI
-  SPI.endTransaction();                     // Release Nano's SPI bus
+  delayMicroseconds(1);
+  digitalWrite(E_CS_PIN, HIGH);
+  SPI.endTransaction();
 
-  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2]; // Assemble 3 bytes into single 24-bit object (using 32-bit datatype)
-  int32_t val = (bits24 << 8) >> 8;                                          // Sign-extend 24-bit to 32-bit. Copy sign bit 23 to bits 31-24 
+  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2];
+  int32_t val = (bits24 << 8) >> 8;
 
-  // // Corruption detection (expanded per datasheet valid range: -2^23 to 2^23-1)
-  // if (val == -1 || val == 0 || abs(val) > 8388607LL) {
-  //   adcs[i].select_mux_channels(MUX_AIN0_AIN1);  // Reset to ch1
-  //   current_channels[i] = 0;
-  //   ready_mask |= (0 << i);  // mark sensor's bit in bitmask as not-ready (0)
-  //   return;  // Skip this read (creates data hole)
-  // }
-
-  // ADS1220 can only store one value, so manually switch and track between channels
   if (current_channels[i] == 0) {
     raw_values[i][0] = val;
     adcs[i].select_mux_channels(MUX_AIN2_AIN3);
@@ -395,8 +340,6 @@ void IRAM_ATTR handleDrdyE() {
     raw_values[i][1] = val;
     adcs[i].select_mux_channels(MUX_AIN0_AIN1);
     current_channels[i] = 0;
-
-    // When second channel is read, record time and mark sensor's bit in bitmask as ready (1)
     timestamps[i] = interrupt_time - time_init;
     ready_mask |= (1 << i);
   }
@@ -416,7 +359,7 @@ void broadcast_command(uint8_t cmd) {
   }
 }
 
-// Disable interrupts for sensor CS pins
+// Disable interrupts for sensor DRDY pins
 void disableADCInterrupts() {
   for (int i = 0; i < NUM_SENSORS; i++) {
     detachInterrupt(digitalPinToInterrupt(all_configs[i].drdy_pin));
@@ -496,25 +439,44 @@ void handleOTA() {
 bool checkDataReady() {
   uint8_t all_ready_mask = (1U << NUM_SENSORS) - 1;  // Local compile-time constant. Stored in CPU stack for compare, not created in and read from RAM.
   if (ready_mask == all_ready_mask) {
-    ready_mask = 0;   // resest all bits in the mask to 0
+    ready_mask = 0;   // reset all bits in the mask to 0
     return true;
   }
   return false;
 }
 
-// Send data over WiFi to single client
-void sendDataWiFi() {
-  for (int i = 0; i < NUM_SENSORS; i++) {
-    if (i > 0) streamingClient.print(",");
-    streamingClient.print(timestamps[i] / 1000000.0, 6);
-    streamingClient.print(",");
-    streamingClient.print(raw_values[i][0]);
-    streamingClient.print(",");
-    streamingClient.print(raw_values[i][1]);
+// Send data over WiFi to host server using HTTP POST
+bool sendDataWiFi() {
+  if (!client.connect(host_ip, host_port)) {
+    if (hasSerial) Serial.println("Connection to host failed");
+    return false;
   }
-  streamingClient.println();
-  streamingClient.println();  // Double newline for SSE event
-  streamingClient.flush();
+
+  // Build CSV line with Nano ID prefix
+  String dataLine = String(NANO_ID) + ",";
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    if (i > 0) dataLine += ",";
+    dataLine += String(timestamps[i] / 1000000.0, 6);
+    dataLine += ",";
+    dataLine += String(raw_values[i][0]);
+    dataLine += ",";
+    dataLine += String(raw_values[i][1]);
+  }
+  dataLine += "\r\n";
+
+  // Send HTTP POST
+  client.println("POST /data HTTP/1.1");
+  client.print("Host: ");
+  client.println(host_ip);
+  client.println("Content-Type: text/plain");
+  client.print("Content-Length: ");
+  client.println(dataLine.length());
+  client.println("Connection: keep-alive");
+  client.println();
+  client.print(dataLine);
+  client.stop();  // Close connection after send
+
+  return true;
 }
 
 void sendDataSerial() {
@@ -529,85 +491,50 @@ void sendDataSerial() {
   Serial.println();
 }
 
-// Listen for new WiFi client connections. No w/Serial version because no datastream when listening
-void listenForClient() {
-  WiFiClient client = server.available();
-  if (client) {
-    if (hasSerial) Serial.println("New Client.");
-    String currentLine = "";
-    bool headersComplete = false;
-    unsigned long timeout = millis() + 5000;  // 5s timeout for header read
-    while (client.connected() && millis() < timeout && !headersComplete) {
-      if (client.available()) {
-        char c = client.read();
-        if (hasSerial) Serial.write(c);
-        if (c == '\n') {
-          if (currentLine.length() == 0) {
-            // Headers complete; send SSE response
-            client.println("HTTP/1.1 200 OK");
-            client.println("Content-Type: text/event-stream");
-            client.println("Cache-Control: no-cache");
-            client.println("Connection: keep-alive");
-            client.println();
-            headersComplete = true;
-          } else {
-            currentLine = "";
-          }
-        } else if (c != '\r') {
-          currentLine += c;
-        }
-      }
+// Attempt to connect to host AP
+void connectToHost() {
+  static unsigned long lastRetry = 0;
+  unsigned long now = millis();
+  if (now - lastRetry >= WiFi_RETRY_DELAY_MS) {
+    lastRetry = now;
+    if (hasSerial) Serial.print("Connecting to ");
+    if (hasSerial) Serial.println(ssid);
+
+    WiFi.begin(ssid, password);
+    unsigned long startAttempt = millis();
+    while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 8000) {
+      delay(500);
+      if (hasSerial) Serial.print(".");
     }
 
-    if (headersComplete) {
-      streamingClient = client;
-      initializeADCs();  // Reset ADCs and time for new session
-      // Reset ready mask so old data doesn't get sent
-      ready_mask = 0;
+    if (WiFi.status() == WL_CONNECTED) {
+      if (hasSerial) Serial.println("\nWiFi connected");
+      if (hasSerial) Serial.print("IP address: ");
+      if (hasSerial) Serial.println(WiFi.localIP());
       WiFiState = CONNECTED;
+      initializeADCs();  // Reset ADCs and time for new session
+      ready_mask = 0;
       ArduinoOTA.end();
       if (hasSerial) Serial.println("Entering CONNECTED state.");
-    } 
-    else {
-      // Error: Timeout or incomplete headers; close and stay in state
-      client.stop();
-      if (hasSerial) Serial.println("Client connection failed.");
+    } else {
+      if (hasSerial) Serial.println("\nConnection failed, retrying...");
     }
   }
 }
 
-// Monitor active client for disconnection
-void monitorClient() {
-  static unsigned long lastConnectionCheck = 0;
+// Monitor connection to host
+void monitorConnection() {
+  static unsigned long lastCheck = 0;
   unsigned long now = millis();
-  if (now - lastConnectionCheck >= WiFi_CHECK_INTERVAL_MS) {
-    lastConnectionCheck = now;
-
-    if (!streamingClient.connected()) {
-      streamingClient.stop();
-      WiFiState = LISTENING;  // Return to listening
-      ArduinoOTA.begin();     // Re-enable OTA (safe to call repeatedly)
+  if (now - lastCheck >= WiFi_CHECK_INTERVAL_MS) {
+    lastCheck = now;
+    if (WiFi.status() != WL_CONNECTED) {
+      if (hasSerial) Serial.println("WiFi disconnected.");
+      WiFiState = CONNECTING;
+      ArduinoOTA.begin();
+      if (hasSerial) Serial.println("Returning to CONNECTING state with OTA re-enabled.");
     }
   }
-  // No else needed — check skipped otherwise
-}
-
-// Monitor active client for disconnection, send debug over serial port
-void monitorClient_wSerial() {
-  static unsigned long lastConnectionCheck = 0;
-  unsigned long now = millis();
-  if (now - lastConnectionCheck >= WiFi_CHECK_INTERVAL_MS) {
-    lastConnectionCheck = now;
-
-    if (!streamingClient.connected()) {
-      if (hasSerial) Serial.println("Streaming client disconnected.");
-      streamingClient.stop();
-      WiFiState = LISTENING;  // Return to listening
-      ArduinoOTA.begin();     // Re-enable OTA (safe to call repeatedly)
-      if (hasSerial) Serial.println("Returning to LISTENING state with OTA re-enabled.");
-    }
-  }
-  // No else needed — check skipped otherwise
 }
 
 void setup() {
@@ -626,29 +553,23 @@ void setup() {
   // SPI init
   SPI.begin();
 
-  // WiFi SoftAP setup
-  WiFi.softAP(ssid, password);
+  // WiFi Station mode setup
+  WiFi.mode(WIFI_STA);
   if (hasSerial) {
-    Serial.println("Starting SoftAP (wireless access point)...");
+    Serial.println("Starting Station mode (WiFi client)...");
     Serial.print("SSID: ");
     Serial.print(ssid);
     Serial.print(". Password: ");
-    Serial.print(password);
-    Serial.print(". SoftAP IP: ");
-    Serial.println(WiFi.softAPIP());
+    Serial.println(password);
   }
 
-  // Start web server
-  server.begin();
-  if (hasSerial) Serial.println("Web server started for data streaming");
-
   // OTA setup
-  ArduinoOTA.setHostname(ssid);
+  ArduinoOTA.setHostname("Hi-STIFFS_Nano");
   ArduinoOTA.setPassword(ota_password);
   ArduinoOTA.begin();
   if (hasSerial) Serial.println("OTA ready. Connect to WiFi and use OTA for updates.");
 
-  // ADS1220 initialization
+  // ADS1220 initialization (but interrupts disabled until connected)
   initializeADCs();
   disableADCInterrupts();
 
@@ -669,12 +590,12 @@ void loop() {
       switch (WiFiState) {
         case CONNECTED:
           if (checkDataReady()) sendDataWiFi();
-          monitorClient();
+          monitorConnection();
           break;
-        case LISTENING:
+        case CONNECTING:
           disableADCInterrupts();
           handleOTA();
-          listenForClient();
+          connectToHost();
           break;
 
       }
@@ -684,14 +605,14 @@ void loop() {
       
       if (checkDataReady()) sendDataSerial();
       switch (WiFiState) {
-        case CONNECTED: // Connected, do not allow OTA updates or new clients and send datastream to client 
+        case CONNECTED: // Connected, do not allow OTA updates and send datastream to host 
           if (checkDataReady()) sendDataWiFi();
-          monitorClient_wSerial();
+          monitorConnection();
           break;        
-        case LISTENING: // No connection, but listen for OTA updates and datastream client
+        case CONNECTING: // Not connected, but attempt connection and allow OTA updates
           disableADCInterrupts();
           handleOTA();
-          listenForClient();
+          connectToHost();
           break;
       }
       break;

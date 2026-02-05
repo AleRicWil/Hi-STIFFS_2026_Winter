@@ -116,12 +116,12 @@ class HeaderConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Configure Header")
-        self.main_layout = QVBoxLayout(self)
+        self.main_layout = QGridLayout(self)
 
         # Note
         self.note_edit = QLineEdit()
-        self.main_layout.addWidget(QLabel("Optional Note:"))
-        self.main_layout.addWidget(self.note_edit)
+        self.main_layout.addWidget(QLabel("Optional Note:"), 0, 0)
+        self.main_layout.addWidget(self.note_edit, 0, 1) # Place at row 0, column 0
 
         # Test Type
         self.test_type_combo = QComboBox()
@@ -129,16 +129,16 @@ class HeaderConfigDialog(QDialog):
         test_types = ["Force Cycle", "Displacement Cycle", "Static Load", "Demo", "Other"] + settings.get('custom_test_types', [])
         self.test_type_combo.addItems(test_types)
         self.test_type_combo.currentTextChanged.connect(self.update_test_fields)
-        self.main_layout.addWidget(QLabel("Test Type:"))
-        self.main_layout.addWidget(self.test_type_combo)
+        self.main_layout.addWidget(QLabel("Test Type:"), 1, 0)
+        self.main_layout.addWidget(self.test_type_combo, 1, 1)
 
         self.other_edit = QLineEdit()
         self.other_edit.setVisible(False)
-        self.main_layout.addWidget(self.other_edit)
+        self.main_layout.addWidget(self.other_edit, 2, 1)
 
         # Dynamic fields for test params
         self.params_layout = QFormLayout()
-        self.main_layout.addLayout(self.params_layout)
+        self.main_layout.addLayout(self.params_layout, 3, 1)
 
         # Test Number (shown only for cycles)
         self.test_number_spin = QSpinBox()
@@ -157,41 +157,41 @@ class HeaderConfigDialog(QDialog):
         self.num_sensors_spin = QSpinBox()
         self.num_sensors_spin.setRange(1, 5)
         self.num_sensors_spin.valueChanged.connect(self.update_sensor_fields)
-        self.main_layout.addWidget(QLabel("Number of ICB-Sensors:"))
-        self.main_layout.addWidget(self.num_sensors_spin)
+        self.main_layout.addWidget(QLabel("# of ICB-Sensors:"), 4, 0)
+        self.main_layout.addWidget(self.num_sensors_spin, 4, 1)
 
-        # Sensor assignment
-        self.sensor_layout = QVBoxLayout()
-        self.main_layout.addLayout(self.sensor_layout)
+        # Sensor assignment - container will be created dynamically in update_sensor_fields
+        self.sensor_container = None
+        self.sensor_layout = None  # Will be recreated each time
 
         # Edit Sensor List button
         edit_sensors_btn = QPushButton("Edit Sensor List")
         edit_sensors_btn.clicked.connect(self.edit_sensors)
-        self.main_layout.addWidget(edit_sensors_btn)
+        self.main_layout.addWidget(edit_sensors_btn, 6, 0, 1, 2, Qt.AlignCenter)
 
         # Hardware config button
         edit_hardware_btn = QPushButton("Edit Hardware Config")
         edit_hardware_btn.clicked.connect(self.edit_hardware)
-        self.main_layout.addWidget(edit_hardware_btn)
+        self.main_layout.addWidget(edit_hardware_btn, 7, 0, 1, 2, Qt.AlignCenter)
 
-        # Buttons
+        # Save/Cancel Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
-        self.main_layout.addWidget(buttons)
+        self.main_layout.addWidget(buttons, 8, 0, 1, 2, Qt.AlignHCenter)
 
         # Load defaults
         self.settings = load_settings()
         self.sensors = self.settings.get('sensors', [])
-        self.custom_types = self.settings.get('custom_test_types', [])
         self.adc_config = self.settings.get('adc_config', "")
         self.daq_config = self.settings.get('daq_config', "")
-        self.test_type_combo.addItems(self.custom_types)  # Ensure added
 
-        # Set default or last sensor config
+        # Set default or last sensor config (block signals to prevent double update)
         last_num = self.settings.get('last_num_sensors', 5)
+        self.num_sensors_spin.blockSignals(True)  # Prevent valueChanged trigger
         self.num_sensors_spin.setValue(last_num)
-        self.update_sensor_fields(last_num)
+        self.num_sensors_spin.blockSignals(False)  # Re-enable
+        self.update_sensor_fields(last_num)  # Explicit initial population
 
         # Initial update
         self.update_test_fields(self.test_type_combo.currentText())
@@ -207,10 +207,17 @@ class HeaderConfigDialog(QDialog):
         # TODO: Add more dynamic fields based on type, e.g., Force for Force Cycle
 
     def update_sensor_fields(self, num):
-        while self.sensor_layout.count():
-            child = self.sensor_layout.takeAt(0)
-            if child.widget():
-                child.widget().deleteLater()
+        # Completely remove old container + widgets (prevents ANY ghosts/duplicates)
+        if self.sensor_container is not None:
+            self.main_layout.removeWidget(self.sensor_container)
+            self.sensor_container.deleteLater()
+            self.sensor_container = None
+            self.sensor_layout = None
+
+        # Create fresh container + layout
+        self.sensor_container = QWidget()
+        self.sensor_layout = QGridLayout(self.sensor_container)
+
         self.sensor_labels = []
         self.sensor_sns = []
 
@@ -224,20 +231,28 @@ class HeaderConfigDialog(QDialog):
         use_last = len(last_labels) == num and len(last_sns) == num
 
         for i in range(num):
-            hbox = QHBoxLayout()
             label_combo = QComboBox()
             label_combo.addItems(["A", "B", "C", "D", "E"])
             label_combo.setCurrentText(last_labels[i] if use_last else default_labels[i])
-            hbox.addWidget(QLabel(f"Sensor {i+1} Label:"))
-            hbox.addWidget(label_combo)
+            self.sensor_layout.addWidget(QLabel(f"Sensor {i+1} Label:"), i, 0)
+            self.sensor_layout.addWidget(label_combo, i, 1)
             sn_combo = QComboBox()
             sn_combo.addItems([s['sn'] for s in self.sensors])
             sn_combo.setCurrentText(last_sns[i] if use_last else sorted_sns[i])
-            hbox.addWidget(QLabel("Serial#:"))
-            hbox.addWidget(sn_combo)
-            self.sensor_layout.addLayout(hbox)
+            self.sensor_layout.addWidget(QLabel("Serial#:"), i, 2)
+            self.sensor_layout.addWidget(sn_combo, i, 3)
+            
             self.sensor_labels.append(label_combo)
             self.sensor_sns.append(sn_combo)
+
+        # Add the fresh container to main layout
+        self.main_layout.addWidget(self.sensor_container, 5, 0, 1, 2)
+
+        # Force full layout/paint refresh (critical for eliminating ghosts/duplicates)
+        self.sensor_layout.activate()
+        self.sensor_container.adjustSize()
+        self.sensor_container.update()
+        self.update()  # Update the dialog itself
 
     def accept(self):
         labels = [combo.currentText() for combo in self.sensor_labels]
