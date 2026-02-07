@@ -120,7 +120,7 @@
 #define E_CS_PIN A6
 
 const int MAX_SENSORS = 5;     // Maximum possible sensors (A to E)
-const int NUM_SENSORS = 3;     // Set to 1-5 to use the first N sensors from all_configs below.
+const int NUM_SENSORS = 5;     // Set to 1-5 to use the first N sensors from all_configs below.
 const uint8_t dr_code = DR_90SPS;  // Data Rate value. In turbo, value is for pairs/sec. In normal, value is for samples/sec
 const SPISettings spi_settings(2000000, MSBFIRST, SPI_MODE1);
 

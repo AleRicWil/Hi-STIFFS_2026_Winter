@@ -23,6 +23,7 @@ PLOT_REFRESH_HZ = 30  # Refresh rate for plot updates in Hz
 
 # Hardcoded WiFi parameters (now for host server)
 HOST_IP = "10.37.29.76"
+HOST_IP = "192.168.1.238"
 HOST_PORT = 80
 HOST_URL = f"http://{HOST_IP}:{HOST_PORT}/data"
 # Hardcoded paths (adjust as needed for your environment) - os.path ensures cross-platform path handling
@@ -39,8 +40,8 @@ class DataReceiverWriter(QtCore.QThread):
     def __init__(self, save_format, num_sensors, sensor_labels, header_content=None):  # Made header_content optional with default None
         super().__init__()
         
-        nano_label = '01'
-        print(f"Datastream from Nano {nano_label} status:")
+        probe_num = '01'
+        print(f"Datastream from Nano {probe_num} status:")
         self.num_sensors = num_sensors
         self.sensor_labels = sensor_labels
         self.save_format = save_format
@@ -54,19 +55,20 @@ class DataReceiverWriter(QtCore.QThread):
         time_str = now.strftime("%H%M%S")
         parent_folder = os.path.join(RAW_DATA_BASE, date_str)
         os.makedirs(parent_folder, exist_ok=True)
-        csv_path = os.path.join(parent_folder, f'{date_str}__{time_str}__{nano_label}.csv')  # Added _01 suffix
+        csv_path = os.path.join(parent_folder, f'{date_str}_{time_str}_{probe_num}.csv')  # Added _01 suffix
         self.csvfile = open(csv_path, 'w', newline='')
         self.csvwriter = csv.writer(self.csvfile)
-        print(f"Created CSV for Nano_{nano_label} at:\t{csv_path}")
+        print(f"Created CSV for Nano_{probe_num} at:\t{csv_path}")
 
         print(f"Writing metadata to CSV...")
         self.csvwriter.writerow(['===BEGIN_METADATA==='])
         # Handle header_content: If None (e.g., standalone run), use minimal defaults; GUI will provide full list
         if header_content is None:
             header_content = []  # Empty default; add minimal required for standalone
-        for l in self.sensor_labels:
-            header_content.insert(0, f'Test Name: {date_str}_test_{time_str}, yyyy-mm-dd_test_hhmmss')
-            header_content += [f"ICB-Sensor {l}'s Latest Calibration: N/A, k{l}1: 1.0, d{l}1: 1.0, c{l}1: 1.0, k{l}2: 1.0, d{l}2: 1.0, c{l}2: 1.0"]
+            for l in self.sensor_labels:
+                header_content += [f"ICB-Sensor {l}'s Latest Calibration: N/A, k{l}1: 1.0, d{l}1: 1.0, c{l}1: 1.0, k{l}2: 1.0, d{l}2: 1.0, c{l}2: 1.0"]
+        
+        header_content.insert(0, f'Test Name: {date_str}_{time_str}_{probe_num}, ' + 'yyyy-mm-dd_hhmmss_{probe_num}')
         for row in header_content:
             row = row.split(', ')
             self.csvwriter.writerow(row)
@@ -90,6 +92,11 @@ class DataReceiverWriter(QtCore.QThread):
                 super().__init__(*args, **kwargs)
 
             def do_POST(self):
+                if not self.thread.running:
+                    self.send_response(400)
+                    self.end_headers()
+                    return
+                
                 content_length = int(self.headers['Content-Length'])
                 post_data = self.rfile.read(content_length).decode('utf-8').strip()
                 if not post_data:
@@ -104,9 +111,9 @@ class DataReceiverWriter(QtCore.QThread):
                     self.end_headers()
                     return
 
-                nano_id = data[0]
-                if nano_id != "01":  # For now, only accept from "01"
-                    self.thread.status_signal.emit(f"Unexpected Nano ID: {nano_id}")
+                probe_id = data[0]
+                if probe_id != "01":  # For now, only accept from "01"
+                    self.thread.status_signal.emit(f"Unexpected Probe ID: {probe_id}")
                     self.send_response(400)
                     self.end_headers()
                     return
@@ -138,12 +145,8 @@ class DataReceiverWriter(QtCore.QThread):
 
                 now = datetime.datetime.now()
                 row = []
-                if self.thread.save_format == 'volts':
-                    for j in range(self.thread.num_sensors):
-                        row += [f"{times[j]:.6f}", volts1[j], volts2[j]]
-                else:
-                    for j in range(self.thread.num_sensors):
-                        row += [f"{times[j]:.6f}", f"{raws1[j]:+08d}", f"{raws2[j]:+08d}"]
+                for j in range(self.thread.num_sensors):
+                    row += [f"{times[j]:.6f}", f"{raws1[j]:+08d}", f"{raws2[j]:+08d}"]
                 row += [now.time()]
                 self.thread.csvwriter.writerow(row)
                 self.thread.csvfile.flush()
@@ -170,10 +173,11 @@ class DataReceiverWriter(QtCore.QThread):
             DataHandler(*args, thread=self)
 
         server = HTTPServer((HOST_IP, HOST_PORT), handler)
+        server.timeout = 0.1
         print(f"Server started at {HOST_URL}")
         while self.running:
             server.handle_request()
-
+            
         print("Exited server loop.")
         self.csvfile.close()
         print("CSV file closed.")
@@ -377,7 +381,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         print(f'Plots closed.')
         self.plot_timer.stop()
         self.ReadWrite.running = False
-        self.ReadWrite.wait()  # Wait for thread to finish
+        # self.ReadWrite.wait()  # Wait for thread to finish
 
 def run_collection(save_format='raw', plot=True, sensors='A', header_content=None):  # header_content now optional (GUI provides it)
     if sensors.isdigit():
@@ -414,7 +418,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Data collection from WiFi stream")
     parser.add_argument('--save-format', choices=['volts', 'raw'], default='raw', help="Format to save strains in CSV: volts or raw")
     parser.add_argument('--plot', type=bool, default=True, help="Enable live plotting")
-    parser.add_argument('--sensors', default='A, B, C', help="Number of sensors (1-5) or comma-separated labels (e.g., 'A,C,E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
+    parser.add_argument('--sensors', default='A, B, C, D, E', help="Number of sensors (1-5) or comma-separated labels (e.g., 'A,C,E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
     args = parser.parse_args()
 
     # For standalone: Use example header_content (GUI will override with dynamic list)

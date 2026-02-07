@@ -83,6 +83,7 @@ class HiSTIFFSData:
                 sensors_info = next((row for row in self.header_rows if row and "Number of ICB-Sensors" in row[0]), None)
                 num_sensors = sensors_info[0][-1]
                 self.sensor_labels = next(([s.partition("Label(s):")[2].strip()] for s in sensors_info if "Label(s)" in s), None)
+                self.sensor_labels = ['A','B','C','D','E']
                 print(f'sensors info: {sensors_info}')
                 if debug: print(f"num sensors: {num_sensors}"); print(f"sensor labels: {self.sensor_labels}")
 
@@ -221,7 +222,7 @@ class HiSTIFFSData:
 
 
 if __name__ == "__main__":
-    data = HiSTIFFSData(date="2026-01-03", time="215113", debug=True)
+    data = HiSTIFFSData(date="2026-02-06", time="184722", debug=True)
     if data.exists:
         data.plot_raw_strains()
         plt.show()

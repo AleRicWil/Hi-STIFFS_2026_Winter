@@ -211,6 +211,10 @@ class HeaderConfigDialog(QDialog):
         # TODO: Add more dynamic fields based on type, e.g., Force for Force Cycle
 
     def update_sensor_fields(self, num):
+        if len(self.sensors) < num:
+            QMessageBox.warning(self, "Not Enough Sensors", f'Only {len(self.sensors)} sensor(s) stored, but {num} requested. Add more sensors to list.')
+            return
+        
         # Completely remove old container + widgets (prevents ANY ghosts/duplicates)
         if self.sensor_container is not None:
             self.main_layout.removeWidget(self.sensor_container)
@@ -291,11 +295,27 @@ class HeaderConfigDialog(QDialog):
             self.daq_config = self.settings['hardware_config']['daq_config']
 
     def get_header_content(self):
+        '''
+        Creates header for test file. This is of the following format:
+
+        Test Name: duplicates filename within metadata [assigned within collect_data:__ini__()]
+        Note: an optional note provided by the user at start of test
+        Test Type: the type of test the probe is being used to complete. Dynamically chooses additional parameters
+        Number of ICB-Sensors: [1-10], Sensor Label(s): which sensors in probe ara active [A-J]
+        Sensor Info Section:
+            Each sensor's serial#, parameters, and calibration
+        System Info Section:
+            Relevant parameters of the Data Acquistion system
+        '''
+        
         header = []
+
+        # user note
         note = self.note_edit.text().strip()
         if note: header.append(f"Note: {note}")
         else: header.append(f"Note:")
 
+        # test type
         test_type = self.test_type_combo.currentText()
         if test_type == "Other":
             custom = self.other_edit.text().strip()
@@ -305,20 +325,25 @@ class HeaderConfigDialog(QDialog):
                 save_settings(self.settings)
             test_type = custom
         params_str = f"Test Type: {test_type}"
-        # TODO: Append params based on fields
         header.append(params_str)
 
         if "Cycle" in test_type:
             header.append(f"Test Number in Session: {self.test_number_spin.value()}, Time since Last Test: {self.test_rest_edit.text()}")
 
+        # number of sensors and labels
         labels = ','.join([combo.currentText() for combo in self.sensor_labels])
         header.append(f"Number of ICB-Sensors: {self.num_sensors_spin.value()}, Sensor Label(s): {labels}")
 
-        for i, label in enumerate([combo.currentText() for combo in self.sensor_labels]):
+        # sensor info
+        for i, l in enumerate([combo.currentText() for combo in self.sensor_labels]):
             sn = [combo.currentText() for combo in self.sensor_sns][i]
             sensor = next((s for s in self.sensors if s['sn'] == sn), {})
-            header.append(f"ICB-Sensor {label}'s Serial#: {sn}, Length (mm): {sensor.get('length', '')}, Spacing (mm): {sensor.get('spacing', '')}, Saturation Load (N): {sensor.get('saturation_load', '')}, Microstrain at Saturation: {sensor.get('saturation_microstrain', '')}")
+            header.append(f"ICB-Sensor {l}'s Serial#: {sn}, Length (mm): {sensor.get('length', '')}, Spacing (mm): {sensor.get('spacing', '')}, Saturation Load (N): {sensor.get('saturation_load', '')}, Microstrain at Saturation: {sensor.get('saturation_microstrain', '')}")
+            header.append(f"ICB-Sensor {l}'s Latest Calibration: N/A, k{l}1: 1.0, d{l}1: 1.0, c{l}1: 1.0, k{l}2: 1.0, d{l}2: 1.0, c{l}2: 1.0")
 
+        # system info
+        self.adc_config = self.settings['hardware_config'].get('adc_config', "")
+        self.daq_config = self.settings['hardware_config'].get('daq_config', "")
         header.append(self.adc_config)
         header.append(self.daq_config)
         return header
@@ -546,7 +571,7 @@ class FilePage(QWidget):
         print(self.mainwindow.settings['paths'].get('raw_data_folder', RAW_DATA_BASE))
         try:
             folder_path = QFileDialog.getExistingDirectory(
-                        self,
+                        self.mainwindow,
                         "Select Raw Data Folder")
         except:
             print('Bad browse attempt')
