@@ -39,100 +39,102 @@ class HiSTIFFSData:
         # Get all data from file
         with open(self.data_csv_path, 'r') as f:
             self.exists = True
-            csv_reader = csv.reader(f)
-
-            # Find metadata end and data start tags, which must be in immediate sequence
-            # Hence, reset check1 flag if data start isn't next in loop
-            check1 = False
-            data_index = -1
-            self.header_rows = []
-            for row_index, row in enumerate(csv_reader):
-                self.header_rows.append(row)
-                if check1 and len(row) == 1 and row[0].strip() == DATA_MARKER:
-                    data_index = row_index
-                    break
-
-                if len(row) == 1 and row[0].strip() == HEADER_MARKER:
-                    check1 = True
-                    continue
-                else: 
-                    check1 = False
-            if data_index == -1: raise ValueError("No marker for end metadata / start data in CSV")
-
-            # Parse required header data
-            try:
-                self.data_dict = {}
-                # Test info
-                test_info = next((row for row in self.header_rows if row and "Test Type" in row[0]), None)
-                test_type = ' '.join(test_info[0].split()[2:])
-                print(f'test info: {test_info}')
-                if debug: print(f"test type: {test_type}")
-                
-                if test_type == 'Force Cycle':
-                    self.cycle_force = next((s.split()[-1] for s in test_info if "Force:" in s), None)
-                    s = self.cycle_force
-                    self.cycle_force, self.cycle_force_units = next(((s[:i], s[i:]) for i in range(1, len(s)) 
-                                                                     if s[i].isalpha() and s[i-1].isdigit()), (s, ''))
-                    next_row = next((row for row in self.header_rows if row and "Test Number" in row[0]), None)
-                    self.test_number = int(next_row[0].split()[-1])
-                    self.test_rest = next_row[1].split()[-1]
-
-                    if debug: print(f'cycle force: {self.cycle_force}, units: {self.cycle_force_units}')
-                
-                # Sensors info
-                sensors_info = next((row for row in self.header_rows if row and "Number of ICB-Sensors" in row[0]), None)
-                num_sensors = sensors_info[0][-1]
-                self.sensor_labels = next(([s.partition("Label(s):")[2].strip()] for s in sensors_info if "Label(s)" in s), None)
-                self.sensor_labels = ['A','B','C','D','E']
-                print(f'sensors info: {sensors_info}')
-                if debug: print(f"num sensors: {num_sensors}"); print(f"sensor labels: {self.sensor_labels}")
-
-                # Sensor info
-                sensor_info = []
-                for l in self.sensor_labels:
-                    sensor_info.append(next((row for row in self.header_rows if row and f"ICB-Sensor {l}" in row[0]), None))
-                
-                self.sensor_info_dict = {}
-                for l in self.sensor_labels:
-                    for row in sensor_info:
-                        if row and f"ICB-Sensor {l}" in row[0]:
-                            temp_dict = {'SN': row[0].split()[-1]}
-                            self.sensor_info_dict[f'Sensor_{l}'] = temp_dict
-                            self.data_dict[f'Sensor_{l}'] = temp_dict
-                
-                if debug: print(f'sensor info: {sensor_info}'); print(f'sensor dict: {self.sensor_info_dict}')
-
-                # Sensor(s) calibration
-                calibration_dict = {}
-                for l in self.sensor_labels:
-                    coeffs = [f'k{l}1', f'd{l}1', f'c{l}1', f'k{l}2', f'd{l}2', f'c{l}2']
-                    cal_info = next((row for row in self.header_rows if row and f"ICB-Sensor {l}'s Latest Calibration" in row[0]), None)
-                    if debug: print(f"sensor {l} cal info: {cal_info}")
-                    c = []
-                    for coeff in coeffs:
-                        c.append(next((s.split()[-1] for s in cal_info if coeff in s), None))
-
-                    coeff_dict = {f"k{l}1": c[0], f"d{l}1": c[1], f"c{l}1": c[2], 
-                                  f"k{l}2": c[3], f"d{l}2": c[4], f"c{l}2": c[5]}
-                    calibration_dict[f"Sensor_{l}"] = coeff_dict
-                if debug: print(f'cal dict: {calibration_dict}')
-
-                # ADS1220 info
-                ADC_info = next((row for row in self.header_rows if row and "Analog" in row[0]), None)
-                data_rate_str = next((s.split()[-1] for s in ADC_info if 'Rate' in s), None)
-                self.data_rate = int(data_rate_str.replace('DR_', '').replace('SPS', ''))
-                self.filter_window = int(round(self.data_rate/20.0 + 0.01, 0))
-                if debug: print(f'ADC info: {ADC_info}'); print(f'data rate: {data_rate_str}, {self.data_rate}Hz')
-
-            
-            except:
-                raise ValueError("Error while parsing metadata")
-
-            # Load sensor data
+            self.csv_reader = csv.reader(f)
+            self.parse_metadata(debug)
+            # Load actual data
             # Note: Using skiprows ensures we read only the data section, cross-platform compatible with pandas.
-            data = pd.read_csv(self.data_csv_path, skiprows=data_index + 1)
+            data = pd.read_csv(self.data_csv_path, skiprows=self.data_index + 1)
 
         # Re-pack all data in appropriate data-types
+        self.repack_data(data)
+
+    def parse_metadata(self, debug):
+        # Find metadata end and data start tags, which must be in immediate sequence
+        # Hence, reset check1 flag if data start isn't next in loop
+        check1 = False
+        self.data_index = -1
+        self.header_rows = []
+        for row_index, row in enumerate(self.csv_reader):
+            self.header_rows.append(row)
+            if check1 and len(row) == 1 and row[0].strip() == DATA_MARKER:
+                self.data_index = row_index
+                break
+
+            if len(row) == 1 and row[0].strip() == HEADER_MARKER:
+                check1 = True
+                continue
+            else: 
+                check1 = False
+        if self.data_index == -1: raise ValueError("No marker for end_metadata/start_data in CSV")
+
+        # Parse required header data
+        try:
+            self.data_dict = {}
+            # Test info
+            test_info = next((row for row in self.header_rows if row and "Test Type" in row[0]), None)
+            self.test_type = ' '.join(test_info[0].split()[2:])
+            print(f'test info: {test_info}')
+            if debug: print(f"test type: {self.test_type}")
+            
+            if self.test_type == 'Force Cycle':
+                self.cycle_force = next((s.split()[-1] for s in test_info if "Force:" in s), None)
+                s = self.cycle_force
+                self.cycle_force, self.cycle_force_units = next(((s[:i], s[i:]) for i in range(1, len(s)) 
+                                                                    if s[i].isalpha() and s[i-1].isdigit()), (s, ''))
+                next_row = next((row for row in self.header_rows if row and "Test Number" in row[0]), None)
+                self.test_number = int(next_row[0].split()[-1])
+                self.test_rest = next_row[1].split()[-1]
+
+                if debug: print(f'cycle force: {self.cycle_force}, units: {self.cycle_force_units}')
+            
+            # Sensors info
+            sensors_info = next((row for row in self.header_rows if row and "Number of ICB-Sensors" in row[0]), None)
+            num_sensors = sensors_info[0][-1]
+            self.sensor_labels = next(([s.partition("Label(s):")[2].strip()] for s in sensors_info if "Label(s)" in s), None)
+            self.sensor_labels = ['A','B','C','D','E']
+            print(f'sensors info: {sensors_info}')
+            if debug: print(f"num sensors: {num_sensors}"); print(f"sensor labels: {self.sensor_labels}")
+
+            # Sensor info
+            sensor_info = []
+            for l in self.sensor_labels:
+                sensor_info.append(next((row for row in self.header_rows if row and f"ICB-Sensor {l}" in row[0]), None))
+            
+            self.sensor_info_dict = {}
+            for l in self.sensor_labels:
+                for row in sensor_info:
+                    if row and f"ICB-Sensor {l}" in row[0]:
+                        temp_dict = {'SN': row[0].split()[-1]}
+                        self.sensor_info_dict[f'Sensor_{l}'] = temp_dict
+                        self.data_dict[f'Sensor_{l}'] = temp_dict
+            
+            if debug: print(f'sensor info: {sensor_info}'); print(f'sensor dict: {self.sensor_info_dict}')
+
+            # Sensor(s) calibration
+            calibration_dict = {}
+            for l in self.sensor_labels:
+                coeffs = [f'k{l}1', f'd{l}1', f'c{l}1', f'k{l}2', f'd{l}2', f'c{l}2']
+                cal_info = next((row for row in self.header_rows if row and f"ICB-Sensor {l}'s Latest Calibration" in row[0]), None)
+                if debug: print(f"sensor {l} cal info: {cal_info}")
+                c = []
+                for coeff in coeffs:
+                    c.append(next((s.split()[-1] for s in cal_info if coeff in s), None))
+
+                coeff_dict = {f"k{l}1": c[0], f"d{l}1": c[1], f"c{l}1": c[2], 
+                                f"k{l}2": c[3], f"d{l}2": c[4], f"c{l}2": c[5]}
+                calibration_dict[f"Sensor_{l}"] = coeff_dict
+            if debug: print(f'calibration dict: {calibration_dict}')
+
+            # ADS1220 info
+            ADC_info = next((row for row in self.header_rows if row and "Analog" in row[0]), None)
+            data_rate_str = next((s.split()[-1] for s in ADC_info if 'Rate' in s), None)
+            self.data_rate = int(data_rate_str.replace('DR_', '').replace('SPS', ''))
+            self.filter_window = int(round(self.data_rate/20.0 + 0.01, 0))
+            if debug: print(f'ADC info: {ADC_info}'); print(f'data rate: {data_rate_str}, {self.data_rate}Hz')
+        except:
+            raise ValueError("Error while parsing metadata")
+
+    def repack_data(self, data):
         for l in self.sensor_labels:
             sensor_data = {'time': data[f'Time_{l}_sec'].to_numpy(dtype=np.float64),
                            'strain_1_raw': data[f'Strain_{l}1_raw'].to_numpy(dtype=np.int32),
@@ -175,50 +177,124 @@ class HiSTIFFSData:
             self.data_dict[f'Sensor_{l}']['strain_1_filter'] = savgol_filter(s['strain_1_raw'], window, order)
             self.data_dict[f'Sensor_{l}']['strain_2_filter'] = savgol_filter(s['strain_2_raw'], window, order)
 
-    def plot_raw_strains(self, sensors='A,B,C,D,E', return_figs=False):
-        sensors_to_plot = sensors.split(',')
+    def plot_raw_strains(self, sensors='A,B,C,D,E', combined=True, return_figs=False):
+        """
+        Plot raw and filtered strain data for the specified sensors.
 
+        Parameters
+        ----------
+        sensors : str, optional
+            Comma-separated list of sensor labels (e.g., 'A,B,C'), by default 'A,B,C,D,E'
+        combined : bool, optional
+            If True, plot all sensors on the same figure (one subplot per channel).
+            If False, create a separate figure for each sensor.
+        return_figs : bool, optional
+            If True, return a list of figure objects instead of showing them.
+        """
+
+        sensors_to_plot = [label.strip() for label in sensors.split(',')]
+
+        # Filter out invalid sensor labels
         removed = [label for label in sensors_to_plot if label not in self.sensor_labels]
         for label in removed:
             print(f"Sensor {label} not in CSV data")
         sensors_to_plot = [label for label in sensors_to_plot if label in self.sensor_labels]
 
-        figs = []  # List to collect figures for optional return
+        if not sensors_to_plot:
+            print("No valid sensors to plot.")
+            return [] if return_figs else None
 
-        for i, l in enumerate(sensors_to_plot):
-            s = self.data_dict[f'Sensor_{l}']
-            if not hasattr(s, 'ini_1'):
-                self.describe_channels()
-            if not hasattr(s, 'strain_1_filter'):
-                self.filter_channels()
+        figs = []
 
-            fig, ax = plt.subplots(1,2, sharex=True, figsize=(12, 8))
-            ax[0].plot(s['time'], s['strain_1_raw'], c='C0', linewidth=0.5, label=f'{l}1_raw')
-            ax[0].plot(s['time'], s['strain_1_filter'], c='C1', linewidth=1.0, label=f'{l}1_filter')
-            ax[0].axhline(s['ini_1'], c='red', linewidth=0.2)
-            ax[0].axhline(s['end_1'], c='green', linewidth=0.2)
-            ax[0].set_xlabel('Time (s)')
-            ax[0].set_ylabel(r'ADC Integer Value ($\pm 2^{23}$)')
-            ax[0].yaxis.set_major_formatter(StrMethodFormatter('{x:,}'))
-            ax[0].legend(loc='upper right')
+        if combined:
+            # ── Single figure with all sensors ────────────────────────────────
+            fig, ax = plt.subplots(1, 2, sharex=True, sharey=True, figsize=(14, 8))
+            fig.suptitle(f"Raw & Filtered Strain – All Sensors\n"
+                        f"Test: {self.test_type}", fontsize=12)
 
-            ax[1].plot(s['time'], s['strain_2_raw'], c='C0', linewidth=0.5, label=f'{l}2_raw')
-            ax[1].plot(s['time'], s['strain_2_filter'], c='C1', linewidth=1.0, label=f'{l}2_filter')
-            ax[1].axhline(s['ini_2'], c='red', linewidth=0.2)
-            ax[1].axhline(s['end_2'], c='green', linewidth=0.2)
-            ax[1].set_xlabel('Time(s)')
-            ax[1].yaxis.set_major_formatter(StrMethodFormatter('{x:,}'))
-            ax[1].legend(loc='upper right')
+            for l in sensors_to_plot:
+                s = self.data_dict[f'Sensor_{l}']
+                if not hasattr(s, 'ini_1'):
+                    self.describe_channels()
+                if not hasattr(s, 'strain_1_filter'):
+                    self.filter_channels()
 
-            fig.suptitle(f'Sensor S/N: {s['SN']}, '+
-                         f'Cycle Load: {self.cycle_force}{self.cycle_force_units}, '+
-                         f'Test # in Session: {self.test_number}. '+
-                         f'Pre-rest Time: {self.test_rest}')
-            fig.tight_layout()
-            figs.append(fig)  # Collect figure for return if requested
+                # Channel 1 (left subplot)
+                ax[0].plot(s['time'], s['strain_1_raw'] - s['ini_1'],
+                        linewidth=0.6, alpha=0.8, label=f'{l}1 raw')
+                ax[0].plot(s['time'], s['strain_1_filter'] - s['ini_1'],
+                        linewidth=1.4, label=f'{l}1 filtered')
+                ax[0].set_xlabel('Time (s)')
+                ax[0].set_ylabel(r"0'ed ADC Integer Value ($\pm 2^{23}$)")
+                ax[0].yaxis.set_major_formatter(StrMethodFormatter('{x:,}'))
+                ax[0].legend(loc='upper right')
+
+                # Channel 2 (right subplot)
+                ax[1].plot(s['time'], s['strain_2_raw'] - s['ini_2'],
+                        linewidth=0.6, alpha=0.8, label=f'{l}2 raw')
+                ax[1].plot(s['time'], s['strain_2_filter'] - s['ini_2'],
+                        linewidth=1.4, label=f'{l}2 filtered')
+                ax[1].set_xlabel('Time (s)')
+                ax[1].yaxis.set_major_formatter(StrMethodFormatter('{x:,}'))
+                ax[1].legend(loc='upper right')
+
+            # Optional extra info in title (if available)
+            if self.test_type == 'Force Cycle':
+                extra = (f"Cycle Load: {self.cycle_force}{self.cycle_force_units}, "
+                        f"Pre-rest: {self.test_rest}")
+                fig.suptitle(fig._suptitle.get_text() + f"\n{extra}", fontsize=11)
+
+            fig.tight_layout(rect=[0, 0, 1, 0.96])
+            figs.append(fig)
+
+        else:
+            # ── One figure per sensor (original behavior) ─────────────────────
+            for l in sensors_to_plot:
+                s = self.data_dict[f'Sensor_{l}']
+                if not hasattr(s, 'ini_1'):
+                    self.describe_channels()
+                if not hasattr(s, 'strain_1_filter'):
+                    self.filter_channels()
+
+                fig, ax = plt.subplots(1, 2, sharex=True, figsize=(12, 7))
+
+                # Channel 1
+                ax[0].plot(s['time'], s['strain_1_raw'] - s['ini_1'],
+                        c='C0', linewidth=0.5, label=f'{l}1_raw')
+                ax[0].plot(s['time'], s['strain_1_filter'] - s['ini_1'],
+                        c='C1', linewidth=1.0, label=f'{l}1_filter')
+                ax[0].axhline(0, c='red', linewidth=0.4, label='Initial')
+                ax[0].axhline(s['end_1'] - s['ini_1'], c='green', linewidth=0.4, label='End')
+                ax[0].set_xlabel('Time (s)')
+                ax[0].set_ylabel(r"0'ed ADC Integer Value ($\pm 2^{23}$)")
+                ax[0].yaxis.set_major_formatter(StrMethodFormatter('{x:,}'))
+                ax[0].legend(loc='upper right')
+
+                # Channel 2
+                ax[1].plot(s['time'], s['strain_2_raw'] - s['ini_2'],
+                        c='C0', linewidth=0.5, label=f'{l}2_raw')
+                ax[1].plot(s['time'], s['strain_2_filter'] - s['ini_2'],
+                        c='C1', linewidth=1.0, label=f'{l}2_filter')
+                ax[1].axhline(0, c='red', linewidth=0.4)
+                ax[1].axhline(s['end_2'] - s['ini_2'], c='green', linewidth=0.4)
+                ax[1].set_xlabel('Time (s)')
+                ax[1].yaxis.set_major_formatter(StrMethodFormatter('{x:,}'))
+                ax[1].legend(loc='upper right')
+
+                if self.test_type == 'Force Cycle':
+                    fig.suptitle(f'Sensor S/N: {s["SN"]}, '
+                                f'Cycle Load: {self.cycle_force}{self.cycle_force_units}, '
+                                f'Test # {self.test_number}  |  Pre-rest: {self.test_rest}')
+
+                fig.tight_layout()
+                figs.append(fig)
 
         if return_figs:
             return figs
+        else:
+            for fig in figs:
+                plt.show()
+            return None
 
 
 if __name__ == "__main__":
