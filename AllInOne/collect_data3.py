@@ -8,10 +8,10 @@ import struct
 import keyboard
 import pandas as pd
 import pyqtgraph as pg
-import requests
 import argparse
 from PyQt5 import QtWidgets, QtCore
-from http.server import BaseHTTPRequestHandler, HTTPServer
+import queue  # For thread-safe queues
+import threading  # For separate processing thread
 
 # === ADS1220 parameters ===
 ADS1220_BITS = 23  # True resolution in differential mode (signed)
@@ -22,20 +22,27 @@ VOLTS_PER_LSB = VREF / (ADS1220_PGA_GAIN * TWO_TO_23)
 
 # === Plotting parameters ===
 PLOT_REFRESH_HZ = 30  # Refresh rate for plot updates in Hz
+PROCESS_FPS = 30  # Set desired FPS for processing/dequeuing (e.g., 30 for smooth plotting)
 
 # Hardcoded WiFi parameters (now for host server)
 HOST_IP = "192.168.137.1"
 # HOST_IP = "192.168.1.238"
 HOST_PORT = 80
-HOST_URL = f"http://{HOST_IP}:{HOST_PORT}/data"
+# HOST_URL = f"http://{HOST_IP}:{HOST_PORT}/data"  # No longer used; switched to persistent TCP
+
 # Hardcoded paths (adjust as needed for your environment) - os.path ensures cross-platform path handling
 CALIBRATION_PATH = r'Hi-STIFFS_2026_Winter/AllInOne/calibration_history.csv'
 RAW_DATA_BASE = r'Hi-STIFFS_2026_Winter/Raw Data'
 
-class DataReceiverWriter(QtCore.QThread):
-    """Thread for hosting a server to receive WiFi data from Nano, processing to volts, writing to CSV, and emitting signals to other threads."""
+# Batching configuration: Process received packets in batches every this interval (ms)
+BATCH_PROCESS_INTERVAL_MS = 100  # Default 0.1s; adjust for desired batch processing frequency
 
-    data_ready = QtCore.pyqtSignal(list)  # Emits flat list [time_0, strain_01_v, strain_02_v, time_1, strain_11_v, strain_12_v, ...]
+class DataReceiverWriter(QtCore.QThread):
+    """Thread for hosting a TCP server to receive WiFi data from Nano, processing to volts, writing to CSV, and emitting signals to other threads.
+    Now uses persistent TCP socket instead of HTTP. Receives length-prefixed binary frames.
+    Adds a queue for received packets, which are batched and processed in a separate thread."""
+
+    data_ready = QtCore.pyqtSignal(list)  # Emits flat list [time_0, strain_01_v, strain_02_v, time_1, strain_11_v, strain_12_v, ...] (batched)
     status_signal = QtCore.pyqtSignal(str)  # For status messages
     rate_updated = QtCore.pyqtSignal(float)  # Emits updated input rate in Hz
 
@@ -86,46 +93,134 @@ class DataReceiverWriter(QtCore.QThread):
 
         print('CSV file opened for writing.')
 
+        # Queue for received raw packets (binary data) to be batched and processed
+        self.receive_queue = queue.Queue()  # Thread-safe queue
+        self.processed_buffer = collections.deque()  # Buffer for processed per-packet emit_lists (post-unpack/volts)
+        self.rate_estimate = 10.0  # Initial guess for input rate (Hz); updated from times
+        self.last_rate_update = time.perf_counter()  # For periodic re-estimation
+        self.collected_first_times = []  # List to accumulate t0 from packets for delta calc
+
+        # Start separate processing thread for batching
+        self.processing_thread = threading.Thread(target=self.process_batches, daemon=True)
+        self.processing_thread.start()
+
+    def read_fully(self, conn, size):
+        data = b''
+        while len(data) < size:
+            chunk = conn.recv(size - len(data))
+            if not chunk:
+                raise EOFError("Connection closed during read")
+            data += chunk
+        return data
+
+    def crc16_ccitt(self, data):
+        crc = 0xFFFF
+        for byte in data:
+            crc ^= byte
+            for _ in range(8):
+                if crc & 1:
+                    crc = (crc >> 1) ^ 0xA001
+                else:
+                    crc >>= 1
+        return crc
+
     def run(self):
-        print("Starting HTTP server...")
-        class DataHandler(BaseHTTPRequestHandler):
-            def __init__(self, *args, thread=None, **kwargs):
-                self.thread = thread
-                super().__init__(*args, **kwargs)
+        print("Starting TCP server...")
+        # Set up TCP socket server
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        server_socket.bind((HOST_IP, HOST_PORT))
+        server_socket.listen(1)  # Listen for one connection (persistent from Nano)
+        server_socket.settimeout(0.1)  # Non-blocking with timeout for loop control
 
-            def do_POST(self):
-                if not self.thread.running:
-                    print('Not running')
-                    self.send_response(400)
-                    self.end_headers()
-                    return
+        print(f"TCP server listening at {HOST_IP}:{HOST_PORT}")
+        conn = None
+        while self.running:
+            if conn is None:
+                try:
+                    conn, addr = server_socket.accept()
+                    print(f"Accepted persistent connection from {addr}")
+                except socket.timeout:
+                    continue
+
+            try:
+                # Read full header: 2 length + 2 seq + 2 crc (6 bytes, little-endian)
+                header = self.read_fully(conn, 6)
+                length = struct.unpack('<H', header[:2])[0]
+                seq = struct.unpack('<H', header[2:4])[0]
+                received_crc = struct.unpack('<H', header[4:6])[0]
+
+                # Read payload fully
+                post_data = self.read_fully(conn, length)
+                if len(post_data) != length:
+                    self.status_signal.emit(f"Invalid data packet of len:{len(post_data)}. Expected len:{length}")
+                    continue
+
+                # Compute CRC over payload (adjust to match Arduino's CRC-CCITT; here using CRC32 truncated for example)
+                computed_crc = self.crc16_ccitt(post_data)
+                if computed_crc != received_crc:
+                    self.status_signal.emit(f"CRC mismatch: received {received_crc}, computed {computed_crc}. Dropping packet.")
+                    continue
+
+                # Optional: Track sequence for drops (e.g., maintain self.last_seq in __init__ as -1)
+                # if hasattr(self, 'last_seq') and seq != self.last_seq + 1:
+                #     self.status_signal.emit(f"Sequence drop detected: expected {self.last_seq + 1}, got {seq}")
+                # self.last_seq = seq
+
+                # Queue the valid payload for processing
+                self.receive_queue.put(post_data)
+
+                self.packet_times.append(time.time())  # Record packet arrival time
                 
-                content_length = int(self.headers['Content-Length'])
-                post_data = self.rfile.read(content_length)  # Read as binary (no decode)
-                if not post_data:
-                    print('no data')
-                    self.send_response(400)
-                    self.end_headers()
-                    return
+                # Update input rate periodically
+                current_time = time.time()
+                if current_time - self.last_rate_time > 1.0:
+                    if self.packet_times:
+                        recent_count = sum(1 for t in self.packet_times if current_time - t <= 3.0)
+                        rate = recent_count / 3.0
+                        self.rate_updated.emit(rate)
+                    self.last_rate_time = current_time
 
-                expected_len = 1 + self.thread.num_sensors * 12  # 1 byte ID + sensors * (4 ts + 4 raw1 + 4 raw2)
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"Error in receive loop: {e}")
+                conn = None
+
+        if conn:
+            conn.close()
+        server_socket.close()
+        print("Exited server loop.")
+        self.csvfile.close()
+        print("CSV file closed.")
+
+    def process_batches(self):
+        """Separate thread to batch-process queued packets at a fixed FPS-like rate.
+        Dequeues all available every fixed period (1/FPS sec), processes to buffer,
+        then uses token-bucket to emit smoothed subsets based on estimated rate from timestamps."""
+        interval_sec = 1.0 / PROCESS_FPS  # Period in seconds
+        next_time = time.perf_counter() + interval_sec  # Schedule first tick
+
+        credits = 0.0  # Accumulator for token-bucket emits
+        while self.running:
+            batch_rows = []
+
+            # Dequeue all available raw packets (non-blocking, thread-safe)
+            while not self.receive_queue.empty():
+                post_data = self.receive_queue.get()
+
+                # Unpack the binary data (same as before)
+                expected_len = 1 + self.num_sensors * 12  # 1 byte ID + sensors * (4 ts + 4 raw1 + 4 raw2)
                 if len(post_data) != expected_len:
-                    print('Data bad length')
-                    self.thread.status_signal.emit(f"Invalid data packet of len:{len(post_data)}. Expected len:{expected_len}")
-                    self.send_response(400)
-                    self.end_headers()
-                    return
+                    self.status_signal.emit(f"Invalid data packet of len:{len(post_data)}. Expected len:{expected_len}")
+                    continue
 
-                fmt = '<B' + 'Iii' * self.thread.num_sensors  # Little-endian: uint8, then per sensor: uint32 ts_us, int32 raw1, int32 raw2
+                fmt = '<B' + 'Iii' * self.num_sensors  # Little-endian: uint8, then per sensor: uint32 ts_us, int32 raw1, int32 raw2
                 try:
                     unpacked = struct.unpack(fmt, post_data)
                     probe_id = unpacked[0]
                     if probe_id != 1:  # Assuming NANO_ID="01" -> atoi=1; adjust if different
-                        print('bad probe_id')
-                        self.thread.status_signal.emit(f"Unexpected Probe ID: {probe_id}")
-                        self.send_response(400)
-                        self.end_headers()
-                        return
+                        self.status_signal.emit(f"Unexpected Probe ID: {probe_id}")
+                        continue
                     
                     times_us = unpacked[1::3]
                     raws1 = unpacked[2::3]
@@ -135,57 +230,69 @@ class DataReceiverWriter(QtCore.QThread):
                     volts1 = [r * VOLTS_PER_LSB for r in raws1]
                     volts2 = [r * VOLTS_PER_LSB for r in raws2]
                 except (ValueError, struct.error):
-                    print('bad data')
-                    self.thread.status_signal.emit("Cannot unpack binary data")
-                    self.send_response(400)
-                    self.end_headers()
-                    return
+                    self.status_signal.emit("Cannot unpack binary data")
+                    continue
 
-                self.thread.packet_times.append(time.time())  # Record packet arrival time
-                
+                # Collect first time for rate estimation
+                self.collected_first_times.append(times[0])
+
+                # Build CSV row (write all at tick end)
                 now = datetime.datetime.now()
                 row = []
-                for j in range(self.thread.num_sensors):
+                for j in range(self.num_sensors):
                     row += [f"{times[j]:.6f}", f"{raws1[j]:+08d}", f"{raws2[j]:+08d}"]
                 row += [now.time()]
-                self.thread.csvwriter.writerow(row)
-                self.thread.csvfile.flush()
-                
-                # Emit data for plotting (always in volts, flat list)
+                batch_rows.append(row)
+
+                # Build and buffer emit list for this packet
                 emit_list = []
-                for j in range(self.thread.num_sensors):
+                for j in range(self.num_sensors):
                     emit_list += [times[j], volts1[j], volts2[j]]
-                self.thread.data_ready.emit(emit_list)
-                
-                # Update input rate periodically
-                current_time = time.time()
-                if current_time - self.thread.last_rate_time > 1.0:
-                    if self.thread.packet_times:
-                        recent_count = sum(1 for t in self.thread.packet_times if current_time - t <= 3.0)
-                        rate = recent_count / 3.0
-                        self.thread.rate_updated.emit(rate)
-                    self.thread.last_rate_time = current_time
+                self.processed_buffer.append(emit_list)
 
-                self.send_response(200)
-                self.end_headers()
+            # Write any new CSV rows (all at once per tick)
+            if batch_rows:
+                self.csvwriter.writerows(batch_rows)
+                self.csvfile.flush()
 
-        def handler(*args):
-            DataHandler(*args, thread=self)
+            # Periodic rate update (every ~1s, if new data)
+            if time.perf_counter() - self.last_rate_update > 1.0 and len(self.collected_first_times) > 10:  # Enough for stable avg
+                deltas = [self.collected_first_times[i+1] - self.collected_first_times[i] for i in range(len(self.collected_first_times)-1)]
+                avg_delta = sum(deltas) / len(deltas) if deltas else 0.1
+                self.rate_estimate = 1.0 / avg_delta if avg_delta > 0 else 10.0
+                self.collected_first_times = self.collected_first_times[-10:]  # Keep recent for drift adaptation
+                self.last_rate_update = time.perf_counter()
+                print(f"Updated rate estimate: {self.rate_estimate:.2f} Hz")  # Debug; remove if needed
 
-        server = HTTPServer((HOST_IP, HOST_PORT), handler)
-        server.timeout = 0.1
-        print(f"HTTP server started at {HOST_URL}")
-        while self.running:
-            server.handle_request()
-            
-        print("Exited server loop.")
-        self.csvfile.close()
-        print("CSV file closed.")
+            # Accumulate credits and decide how many packets to emit
+            credits += self.rate_estimate * interval_sec  # E.g., 10 * 0.033 ≈ 0.33
+            to_emit = int(credits)
+            credits -= to_emit
+
+            if to_emit > 0:
+                # Emit up to to_emit packets from buffer (or all if fewer)
+                batch_emit_lists = []
+                actual_emitted = min(to_emit, len(self.processed_buffer))
+                for _ in range(actual_emitted):
+                    batch_emit_lists.append(self.processed_buffer.popleft())
+
+                if batch_emit_lists:
+                    # Flatten and emit
+                    flat_batch_emit = [item for sublist in batch_emit_lists for item in sublist]
+                    self.data_ready.emit(flat_batch_emit)
+
+            # Sleep until next fixed tick (precise timing for smooth FPS-like rate)
+            sleep_duration = max(0, next_time - time.perf_counter())
+            if sleep_duration == 0:
+                print("Processing overrun; skipping sleep to catch up.")  # Debug; remove if not needed
+            time.sleep(sleep_duration)
+            next_time += interval_sec
 
 class RealTimePlotWindow(QtWidgets.QMainWindow):
     """
     Class to handle real-time plotting of strain, force, and position. 
     Does not create or write to or know about CSVs.
+    Now handles batched data emits (multiple packets at once).
     """
 
     def __init__(self, readwrite, num_sensors, sensor_labels):
@@ -309,36 +416,42 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         print(f"\tSuccessfully created plot windows.")
 
     def handle_data(self, data_list):
-        """Handle emitted data: compute force/position, append to deques."""
-        if len(data_list) != self.num_sensors * 3:
-            print("Invalid data list length received for plotting.")
+        """Handle emitted data: compute force/position, append to deques.
+        Now handles batched data (multiple packets flattened)."""
+        if len(data_list) % (self.num_sensors * 3) != 0:
+            print("Invalid batched data list length received for plotting.")
             return
 
-        times = [data_list[j * 3] for j in range(self.num_sensors)]
-        strains1 = [data_list[j * 3 + 1] for j in range(self.num_sensors)]
-        strains2 = [data_list[j * 3 + 2] for j in range(self.num_sensors)]
+        num_packets = len(data_list) // (self.num_sensors * 3)
+        for p in range(num_packets):
+            offset = p * (self.num_sensors * 3)
+            times = [data_list[offset + j * 3] for j in range(self.num_sensors)]
+            strains1 = [data_list[offset + j * 3 + 1] for j in range(self.num_sensors)]
+            strains2 = [data_list[offset + j * 3 + 2] for j in range(self.num_sensors)]
 
-        for i in range(self.num_sensors):
-            time_sec = times[i]
-            strain1 = strains1[i]
-            strain2 = strains2[i]
+            for i in range(self.num_sensors):
+                time_sec = times[i]
+                strain1 = strains1[i]
+                strain2 = strains2[i]
 
-            # Calculate force and position
-            force = 0# (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i])) / (self.k1[i] * self.k2[i] * (self.d2[i] - self.d1[i]))
-            num = 0# (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
-            den = 0# (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
-            position = 0# num / den if abs(den) > 2.5e-5 else 0.0
-            position = 0# 0.0 if position > 0.25 or position < -0.10 else position
+                # Calculate force and position
+                force = 0# (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i])) / (self.k1[i] * self.k2[i] * (self.d2[i] - self.d1[i]))
+                num = 0# (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
+                den = 0# (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
+                position = 0# num / den if abs(den) > 2.5e-5 else 0.0
+                position = 0# 0.0 if position > 0.25 or position < -0.10 else position
 
-            self.times[i].append(time_sec)
-            self.strains1[i].append(strain1 * 1000.0)  # mV for display
-            self.strains2[i].append(strain2 * 1000.0)
-            self.forces[i].append(force)
-            self.positions[i].append(position * 100)  # to cm
+                self.times[i].append(time_sec)
+                self.strains1[i].append(strain1 * 1000.0)  # mV for display
+                self.strains2[i].append(strain2 * 1000.0)
+                self.forces[i].append(force)
+                self.positions[i].append(position * 100)  # to cm
 
     def update_plots(self):
         """Update all plot curves and ranges."""
         for i in range(self.num_sensors):
+            if i == 1:
+                continue
             self.curves_ch1[i].setData(self.times[i], self.strains1[i])
             self.curves_ch2[i].setData(self.times[i], self.strains2[i])
             self.curves_force[i].setData(self.times[i], self.forces[i])
@@ -418,16 +531,24 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Data collection from WiFi stream")
     parser.add_argument('--save-format', choices=['volts', 'raw'], default='raw', help="Format to save strains in CSV: volts or raw")
     parser.add_argument('--plot', type=bool, default=True, help="Enable live plotting")
-    parser.add_argument('--sensors', default='A, B, C, D, E', help="Number of sensors (1-5) or comma-separated labels (e.g., 'A,C,E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
+    parser.add_argument('--sensors', default='A,B,C,D,E', help="Number of sensors (1-5) or comma-separated labels (e.g., 'A,C,E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
     args = parser.parse_args()
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
         "Note: Thow-away trial run. Not real data",
-        "Test Type: Force Cycle, Force: 20N, Cycles: 66, Dwell Time: 1sec, Tool Accuracy: +/-0.05N",
-        "Test Number in Session: 10, Time since Last Test: ~10min",
-        f"Number of ICB-Sensors: 1, Sensor Label(s): {args.sensors}",
+        "Test Type: Demo",
+        f"Number of ICB-Sensors: 5, Sensor Label(s): {args.sensors}",
+        "ICB-Sensor A's Serial#: 001, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
+        "ICB-Sensor A's Latest Calibration: N/A, kA1: 1.0, dA1: 1.0, cA1: 1.0, kA2: 1.0, dA2: 1.0, cA2: 1.0",
         "ICB-Sensor B's Serial#: 002, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
+        "ICB-Sensor B's Latest Calibration: N/A, kB1: 1.0, dB1: 1.0, cB1: 1.0, kB2: 1.0, dB2: 1.0, cB2: 1.0",
+        "ICB-Sensor C's Serial#: 003, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
+        "ICB-Sensor C's Latest Calibration: N/A, kC1: 1.0, dC1: 1.0, cC1: 1.0, kC2: 1.0, dC2: 1.0, cC2: 1.0",
+        "ICB-Sensor D's Serial#: 004, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
+        "ICB-Sensor D's Latest Calibration: N/A, kD1: 1.0, dD1: 1.0, cD1: 1.0, kD2: 1.0, dD2: 1.0, cD2: 1.0",
+        "ICB-Sensor E's Serial#: 005, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
+        "ICB-Sensor E's Latest Calibration: N/A, kE1: 1.0, dE1: 1.0, cE1: 1.0, kE2: 1.0, dE2: 1.0, cE2: 1.0",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_90SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"
     ]

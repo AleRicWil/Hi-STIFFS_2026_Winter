@@ -57,10 +57,10 @@
 //      - The _raw values are the 24-bit signed integers directly from the ADC (sign-extended to 32-bit for printing).
 //        Previously, these were converted to mV using the formula: (float(val) * VREF / PGA_GAIN / (1LL<<23)) * 1000.0f,
 //        but now we send the raw integers for flexibility (conversion can be done later if needed).
-//      - Now outputs over WiFi using client HTTP POST to a host server (port 80) for streaming.
+//      - Now outputs over WiFi using persistent TCP connection to a host server (port 80) for streaming.
 //        The Nano connects as a WiFi client to the host's AP.
 //      - Serial output retained for debugging (with timeout to avoid blocking if no USB connected).
-//      - Justification: Enables untethered field operation; HTTP POST provides efficient, non-blocking streaming compatible with Python servers.
+//      - Justification: Enables untethered field operation; persistent TCP provides efficient, reliable streaming compatible with Python servers.
 //        High baud rate serial fallback for wired debugging.
 //    - Wireless Features:
 //      - Station mode: Nano connects to host's WiFi network (configurable SSID/password).
@@ -99,6 +99,13 @@
 //      ~2000 SPS total) once tested; focus on tight execution to handle higher interrupt rates.
 //    - Multi-Nano Compatibility: Each Nano has a unique ID (NANO_ID) sent in data packets.
 //      Host handles aggregation; no changes here for multi-Nano beyond ID inclusion.
+//    - Persistent TCP: Replaced per-packet HTTP POST with a single persistent TCP connection
+//      established once in CONNECTED state. Data is streamed as length-prefixed binary frames
+//      for reliable, low-overhead transmission. This avoids repeated handshakes and headers.
+//    - Queued Batching: Added a queue (std::deque<std::vector<uint8_t>>) to store complete
+//      binary packets when data is ready. Every BATCH_SEND_INTERVAL_MS (configurable, default 100ms),
+//      the queue is drained and all packets are sent over the persistent connection. This batches
+//      sends to amortize network overhead while maintaining low latency.
 //
 /////////////////////////////////////////////////////////////////////////////////////////
 
@@ -106,6 +113,8 @@
 #include <SPI.h>
 #include <WiFi.h>       // For WiFi Station mode
 #include <ArduinoOTA.h> // For Over-The-Air updates
+#include <deque>        // For queuing packets to batch sends
+#include <vector>       // For storing binary packet data
 
 #define FULL_SCALE (1LL << 23) // 2^23 for 24-bit signed scaling - retained for reference, though not used in raw output
 #define A_DRDY_PIN 10
@@ -121,7 +130,7 @@
 
 const int MAX_SENSORS = 5;     // Maximum possible sensors (A to E)
 const int NUM_SENSORS = 5;     // Set to 1-5 to use the first N sensors from all_configs below.
-const uint8_t dr_code = DR_90SPS;  // Data Rate value. In turbo, value is for pairs/sec. In normal, value is for samples/sec
+const uint8_t dr_code = DR_330SPS;  // Data Rate value. In turbo, value is for pairs/sec. In normal, value is for samples/sec
 const SPISettings spi_settings(2000000, MSBFIRST, SPI_MODE1);
 
 // WiFi access point to connect to (host's AP)
@@ -129,12 +138,15 @@ const char* ssid = "Hi-STIFFS_Host";       // Host WiFi network name (SSID) - ch
 const char* password = "BYUCropBio";       // Host WiFi password (minimum 8 characters)
 const char* ota_password = "BYUCropBio";   // Optional OTA password for security (change this)
 // Host server details
-const char* host_ip = "10.37.29.76";       // IPv4 of the host server (e.g., Raspberry Pi or laptop), from device settings, not Python code
+const char* host_ip = "192.168.137.1";       // IPv4 of the host server (e.g., Raspberry Pi or laptop), from device settings, not Python code
 const int host_port = 80;                  // Port on host for data streaming
 WiFiClient client;                         // Global client for sending data to host
 
 // Unique Nano ID (2-digit, e.g., "01" to "99")
 const char* NANO_ID = "01";                // Assign per Nano; for now, fixed to "01"
+
+// Batching configuration: Send queued packets every this interval (ms)
+const unsigned long BATCH_SEND_INTERVAL_MS = 10;  // Default 0.1s; adjust for desired batch frequency
 
 struct SensorConfig {
   char id;                     // Sensor ID ('A', 'B', etc.)
@@ -160,6 +172,11 @@ volatile uint8_t ready_mask = 0;                    // Bitmask tracking ready se
 unsigned long time_init;                            // t=0 of datastream. Set each time connection initiates datastream
 const unsigned long WiFi_CHECK_INTERVAL_MS = 1000;  // 1 Hz
 const unsigned long WiFi_RETRY_DELAY_MS = 5000;     // Retry connection every 5s if failed
+
+// Packet queue for batching: Stores binary packets ready to send
+std::deque<std::vector<uint8_t>> packet_queue;      // Queue of binary packets (each vector is one full sensor set)
+uint16_t seq_num = 0;                               // Sequence number for packets, increments per packet
+unsigned long last_batch_send = 0;                  // Timestamp of last batch send
 
 // FSM States
 enum State_Serial {
@@ -366,6 +383,14 @@ void disableADCInterrupts() {
   }
 }
 
+// Enable interrupts for sensor DRDY pins
+void enableADCInterrupts() {
+  void (*isrHandlers[5])() = {handleDrdyA, handleDrdyB, handleDrdyC, handleDrdyD, handleDrdyE};
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    attachInterrupt(digitalPinToInterrupt(all_configs[i].drdy_pin), isrHandlers[i], FALLING);
+  }
+}
+
 // Reset and reconfigure all ADCs, reset time_init
 void initializeADCs() {
   // Broadcast RESET to all active sensors
@@ -376,7 +401,6 @@ void initializeADCs() {
   disableADCInterrupts();
 
   // ADS1220 initialization
-  void (*isrHandlers[5])() = {handleDrdyA, handleDrdyB, handleDrdyC, handleDrdyD, handleDrdyE};
   for (int i = 0; i < NUM_SENSORS; i++) {
     adcs[i].begin(all_configs[i].cs_pin, all_configs[i].drdy_pin);
     adcs[i].set_OperationMode(MODE_TURBO);
@@ -388,13 +412,12 @@ void initializeADCs() {
     adcs[i].select_mux_channels(MUX_AIN0_AIN1);
     current_channels[i] = 0;
 
-    attachInterrupt(digitalPinToInterrupt(all_configs[i].drdy_pin), isrHandlers[i], FALLING);
-
     if (hasSerial) {
       Serial.print("Setup complete for Sensor [enumerated as: ");
       Serial.print(i);
       Serial.println("]");
     }
+    delay(100);
   }
   if (hasSerial) Serial.println("Starting datastream from sensors");
 
@@ -426,7 +449,8 @@ void initializeADCs() {
   }
 
   // Set time=0 for datastream after letting ADS1220 modules stabilize
-  delay(100);
+  enableADCInterrupts();
+  delay(50);
   time_init = micros();
 }
 
@@ -445,40 +469,85 @@ bool checkDataReady() {
   return false;
 }
 
-// Send data over WiFi to host server using HTTP POST
-bool sendDataWiFi() {
-  if (!client.connect(host_ip, host_port)) {
-    if (hasSerial) Serial.println("Connection to host failed");
+// Build a binary packet from current data and add to queue
+void queueDataPacket() {
+  // Calculate packet payload length: 1 byte ID + sensors * (4 ts + 4 raw1 + 4 raw2)
+  size_t payload_len = 1 + NUM_SENSORS * 12;
+
+  // Build payload separately
+  std::vector<uint8_t> payload;
+  payload.reserve(payload_len);
+
+  // Add nano_id as uint8_t
+  uint8_t nano_id = atoi(NANO_ID);
+  payload.push_back(nano_id);
+
+  // Per sensor: uint32_t ts_us, int32_t raw1, int32_t raw2
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    uint32_t ts_us = (uint32_t)timestamps[i];  // Cast to 32-bit (matches ESP32 unsigned long)
+    const uint8_t* ts_ptr = reinterpret_cast<const uint8_t*>(&ts_us);
+    payload.insert(payload.end(), ts_ptr, ts_ptr + sizeof(uint32_t));
+
+    const uint8_t* raw1_ptr = reinterpret_cast<const uint8_t*>(&raw_values[i][0]);
+    payload.insert(payload.end(), raw1_ptr, raw1_ptr + sizeof(int32_t));
+
+    const uint8_t* raw2_ptr = reinterpret_cast<const uint8_t*>(&raw_values[i][1]);
+    payload.insert(payload.end(), raw2_ptr, raw2_ptr + sizeof(int32_t));
+  }
+
+  // Compute CRC over payload
+  uint16_t crc = compute_crc(payload.data(), payload.size());
+
+  // Build full packet: length (2 bytes) + seq (2) + crc (2) + payload
+  std::vector<uint8_t> packet;
+  packet.reserve(6 + payload_len);
+
+  // Length prefix (uint16_t, little-endian)
+  uint16_t length = static_cast<uint16_t>(payload_len);
+  packet.push_back(static_cast<uint8_t>(length & 0xFF));
+  packet.push_back(static_cast<uint8_t>((length >> 8) & 0xFF));
+
+  // Sequence number (uint16_t, little-endian)
+  packet.push_back(static_cast<uint8_t>(seq_num & 0xFF));
+  packet.push_back(static_cast<uint8_t>((seq_num >> 8) & 0xFF));
+  seq_num++;  // Increment for next packet
+
+  // CRC (uint16_t, little-endian)
+  packet.push_back(static_cast<uint8_t>(crc & 0xFF));
+  packet.push_back(static_cast<uint8_t>((crc >> 8) & 0xFF));
+
+  // Append payload
+  packet.insert(packet.end(), payload.begin(), payload.end());
+
+  // Add to queue
+  packet_queue.push_back(std::move(packet));
+}
+
+// Send queued packets over persistent TCP
+bool sendQueuedDataTCP() {
+  if (!client.connected()) {
+    if (hasSerial) Serial.println("TCP not connected; skipping send");
     return false;
   }
 
-  // Build CSV line with Nano ID prefix
-  String dataLine = String(NANO_ID) + ",";
-  for (int i = 0; i < NUM_SENSORS; i++) {
-    if (i > 0) dataLine += ",";
-    dataLine += String(timestamps[i] / 1000000.0, 6);
-    dataLine += ",";
-    dataLine += String(raw_values[i][0]);
-    dataLine += ",";
-    dataLine += String(raw_values[i][1]);
+  bool sent_any = false;
+  while (!packet_queue.empty()) {
+    const auto& packet = packet_queue.front();
+    if (client.write(packet.data(), packet.size()) != packet.size()) {
+      if (hasSerial) Serial.println("Partial or failed packet send");
+      return false;  // Stop on error to avoid out-of-order
+    }
+    packet_queue.pop_front();
+    sent_any = true;
   }
-  dataLine += "\r\n";
 
-  // Send HTTP POST
-  client.println("POST /data HTTP/1.1");
-  client.print("Host: ");
-  client.println(host_ip);
-  client.println("Content-Type: text/plain");
-  client.print("Content-Length: ");
-  client.println(dataLine.length());
-  client.println("Connection: keep-alive");
-  client.println();
-  client.print(dataLine);
-  client.stop();  // Close connection after send
-
+  if (sent_any) {
+    client.flush();  // Ensure data is sent
+  }
   return true;
 }
 
+// Send individual packet over wired serial, if connected
 void sendDataSerial() {
   for (int i = 0; i < NUM_SENSORS; i++) {
     if (i > 0) Serial.print(",");
@@ -511,11 +580,19 @@ void connectToHost() {
       if (hasSerial) Serial.println("\nWiFi connected");
       if (hasSerial) Serial.print("IP address: ");
       if (hasSerial) Serial.println(WiFi.localIP());
-      WiFiState = CONNECTED;
-      initializeADCs();  // Reset ADCs and time for new session
-      ready_mask = 0;
-      ArduinoOTA.end();
-      if (hasSerial) Serial.println("Entering CONNECTED state.");
+
+      // Establish persistent TCP connection
+      if (client.connect(host_ip, host_port)) {
+        if (hasSerial) Serial.println("Persistent TCP connected to host");
+        WiFiState = CONNECTED;
+        initializeADCs();  // Reset ADCs and time for new session
+        ready_mask = 0;
+        packet_queue.clear();  // Clear any stale packets
+        ArduinoOTA.end();
+        if (hasSerial) Serial.println("Entering CONNECTED state.");
+      } else {
+        if (hasSerial) Serial.println("TCP connection failed");
+      }
     } else {
       if (hasSerial) Serial.println("\nConnection failed, retrying...");
     }
@@ -528,8 +605,9 @@ void monitorConnection() {
   unsigned long now = millis();
   if (now - lastCheck >= WiFi_CHECK_INTERVAL_MS) {
     lastCheck = now;
-    if (WiFi.status() != WL_CONNECTED) {
-      if (hasSerial) Serial.println("WiFi disconnected.");
+    if (WiFi.status() != WL_CONNECTED || !client.connected()) {
+      if (hasSerial) Serial.println("WiFi or TCP disconnected.");
+      client.stop();
       WiFiState = CONNECTING;
       ArduinoOTA.begin();
       if (hasSerial) Serial.println("Returning to CONNECTING state with OTA re-enabled.");
@@ -537,9 +615,21 @@ void monitorConnection() {
   }
 }
 
+// Compute WiFi cyclic redundancy check code for packet integrity check
+uint16_t compute_crc(const uint8_t* data, size_t len) {
+  uint16_t crc = 0xFFFF;  // CRC-CCITT initial value
+  for (size_t i = 0; i < len; i++) {
+    crc ^= data[i];
+    for (uint8_t j = 0; j < 8; j++) {
+      crc = (crc & 1) ? (crc >> 1) ^ 0xA001 : crc >> 1;
+    }
+  }
+  return crc;
+}
+
 void setup() {
   // Serial detection and init
-  Serial.begin(2000000);
+  Serial.begin(1000000);
   unsigned long startTime = millis();
   while (!Serial) {
     if (millis() - startTime > 5000) {
@@ -564,10 +654,10 @@ void setup() {
   }
 
   // OTA setup
-  ArduinoOTA.setHostname("Hi-STIFFS_Nano");
-  ArduinoOTA.setPassword(ota_password);
-  ArduinoOTA.begin();
-  if (hasSerial) Serial.println("OTA ready. Connect to WiFi and use OTA for updates.");
+  // ArduinoOTA.setHostname("Hi-STIFFS_Nano");
+  // ArduinoOTA.setPassword(ota_password);
+  // ArduinoOTA.begin();
+  // if (hasSerial) Serial.println("OTA ready. Connect to WiFi and use OTA for updates.");
 
   // ADS1220 initialization (but interrupts disabled until connected)
   initializeADCs();
@@ -579,43 +669,61 @@ void setup() {
     Serial.print("Initial state: ");
     Serial.println(SerialState == HAS_SERIAL ? "HAS_SERIAL" : "NO_SERIAL");
   }
+
+  last_batch_send = millis();
 }
 
 void loop() {
 
   // State-specific actions
   switch (SerialState) {
-    case NO_SERIAL: // Do nothing with the serial port
+    case NO_SERIAL: { // Do nothing with the serial port
       
       switch (WiFiState) {
-        case CONNECTED:
-          if (checkDataReady()) sendDataWiFi();
+        case CONNECTED: {
+          if (checkDataReady()) {
+            queueDataPacket();  // Build and queue binary packet
+          }
+          // Check if time to send batch
+          unsigned long now = millis();
+          if (now - last_batch_send >= BATCH_SEND_INTERVAL_MS) {
+            sendQueuedDataTCP();
+            last_batch_send = now;
+          }
           monitorConnection();
-          break;
-        case CONNECTING:
+        } break;
+        case CONNECTING: {
           disableADCInterrupts();
           handleOTA();
           connectToHost();
-          break;
+        } break;
 
       }
-      break;
+    } break;
     
-    case HAS_SERIAL:  // Send data over serial port at all times
-      
-      if (checkDataReady()) sendDataSerial();
+    case HAS_SERIAL: {  // Send data over serial port at all times
+
       switch (WiFiState) {
-        case CONNECTED: // Connected, do not allow OTA updates and send datastream to host 
-          if (checkDataReady()) sendDataWiFi();
+        case CONNECTED: { // Connected, do not allow OTA updates and send datastream to host 
+          if (checkDataReady()) {
+            queueDataPacket();  // Build and queue binary packet
+            sendDataSerial();   // Also send over serial for debugging
+          }
+          // Check if time to send batch
+          unsigned long now = millis();
+          if (now - last_batch_send >= BATCH_SEND_INTERVAL_MS) {
+            sendQueuedDataTCP();
+            last_batch_send = now;
+          }
           monitorConnection();
-          break;        
-        case CONNECTING: // Not connected, but attempt connection and allow OTA updates
+        } break;        
+        case CONNECTING: { // Not connected, but attempt connection and allow OTA updates
           disableADCInterrupts();
           handleOTA();
           connectToHost();
-          break;
+        } break;
       }
-      break;
+    } break;
   }
 
 }

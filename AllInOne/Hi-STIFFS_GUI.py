@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import *  # Imports all widgets for concise usage (as per u
 from PyQt5.QtGui import QPalette, QColor, QFont
 from PyQt5.QtCore import Qt
 from process2 import HiSTIFFSData, RAW_DATA_BASE
-import collect_data2 as cd  # Import at top for cross-platform module access via PyQt5/Python
+import collect_data3 as cd  # Import at top for cross-platform module access via PyQt5/Python
 
 SETTINGS_FILE = 'Cross-Platform_GUI_Settings.json'  # File for storing user preferences, cross-platform compatible via JSON.
 

@@ -159,10 +159,13 @@ class HiSTIFFSData:
     def describe_channels(self, time_cutoff=1.0):
         for l in self.sensor_labels:
             s = self.data_dict[f'Sensor_{l}']
-            avg_initial_value_1_raw = np.average(s['strain_1_raw'][s['time'] <= time_cutoff])
-            avg_initial_value_2_raw = np.average(s['strain_2_raw'][s['time'] <= time_cutoff])
-            avg_end_value_1_raw = np.average(s['strain_1_raw'][s['time'] >= s['time'][-1] - time_cutoff])
-            avg_end_value_2_raw = np.average(s['strain_2_raw'][s['time'] >= s['time'][-1] - time_cutoff])
+            t_min = np.min(s['time'])
+            s_time_cutoff = time_cutoff + t_min
+
+            avg_initial_value_1_raw = np.average(s['strain_1_raw'][s['time'] <= s_time_cutoff])
+            avg_initial_value_2_raw = np.average(s['strain_2_raw'][s['time'] <= s_time_cutoff])
+            avg_end_value_1_raw = np.average(s['strain_1_raw'][s['time'] >= s['time'][-1] - s_time_cutoff])
+            avg_end_value_2_raw = np.average(s['strain_2_raw'][s['time'] >= s['time'][-1] - s_time_cutoff])
             self.data_dict[f'Sensor_{l}']['ini_1'] = avg_initial_value_1_raw
             self.data_dict[f'Sensor_{l}']['ini_2'] = avg_initial_value_2_raw
             self.data_dict[f'Sensor_{l}']['end_1'] = avg_end_value_1_raw
@@ -298,7 +301,7 @@ class HiSTIFFSData:
 
 
 if __name__ == "__main__":
-    data = HiSTIFFSData(date="2026-02-06", time="184722", debug=True)
+    data = HiSTIFFSData(date="2026-02-07", time="151554", debug=True)
     if data.exists:
         data.plot_raw_strains()
         plt.show()
