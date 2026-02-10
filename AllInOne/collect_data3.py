@@ -343,7 +343,8 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.plot_ch2.setLabel('left', '', units='mV')
         self.plot_ch2.addLegend()
 
-        colors = ['r', 'b', 'g', 'y', 'c'][:self.num_sensors]
+        colors = ['r', 'g', 'c', 'y', 'm'] [:self.num_sensors]
+        # → red, green, cyan, yellow, magenta
         self.curves_ch1 = []
         self.curves_ch2 = []
         for i, s in enumerate(self.sensor_labels):
@@ -450,8 +451,8 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
     def update_plots(self):
         """Update all plot curves and ranges."""
         for i in range(self.num_sensors):
-            if i == 1:
-                continue
+            # if i == 1:
+            #     continue
             self.curves_ch1[i].setData(self.times[i], self.strains1[i])
             self.curves_ch2[i].setData(self.times[i], self.strains2[i])
             self.curves_force[i].setData(self.times[i], self.forces[i])
@@ -536,7 +537,7 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: Thow-away trial run. Not real data",
+        "Note: Mediums with 6in spacing at 25ft/min. Tops removed.",
         "Test Type: Demo",
         f"Number of ICB-Sensors: 5, Sensor Label(s): {args.sensors}",
         "ICB-Sensor A's Serial#: 001, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",

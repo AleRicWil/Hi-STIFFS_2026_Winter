@@ -207,6 +207,8 @@ class HiSTIFFSData:
             print("No valid sensors to plot.")
             return [] if return_figs else None
 
+        colors = ['r', 'g', 'c', 'y', 'm']
+        # → red, green, cyan, yellow, magenta
         figs = []
 
         if combined:
@@ -215,7 +217,7 @@ class HiSTIFFSData:
             fig.suptitle(f"Raw & Filtered Strain – All Sensors\n"
                         f"Test: {self.test_type}", fontsize=12)
 
-            for l in sensors_to_plot:
+            for l, c  in zip(sensors_to_plot, colors):
                 s = self.data_dict[f'Sensor_{l}']
                 if not hasattr(s, 'ini_1'):
                     self.describe_channels()
@@ -224,9 +226,9 @@ class HiSTIFFSData:
 
                 # Channel 1 (left subplot)
                 ax[0].plot(s['time'], s['strain_1_raw'] - s['ini_1'],
-                        linewidth=0.6, alpha=0.8, label=f'{l}1 raw')
+                        linewidth=0.6, alpha=0.8)
                 ax[0].plot(s['time'], s['strain_1_filter'] - s['ini_1'],
-                        linewidth=1.4, label=f'{l}1 filtered')
+                        linewidth=1.4, label=f'{l}1', c=c)
                 ax[0].set_xlabel('Time (s)')
                 ax[0].set_ylabel(r"0'ed ADC Integer Value ($\pm 2^{23}$)")
                 ax[0].yaxis.set_major_formatter(StrMethodFormatter('{x:,}'))
@@ -234,9 +236,9 @@ class HiSTIFFSData:
 
                 # Channel 2 (right subplot)
                 ax[1].plot(s['time'], s['strain_2_raw'] - s['ini_2'],
-                        linewidth=0.6, alpha=0.8, label=f'{l}2 raw')
+                        linewidth=0.6, alpha=0.8)
                 ax[1].plot(s['time'], s['strain_2_filter'] - s['ini_2'],
-                        linewidth=1.4, label=f'{l}2 filtered')
+                        linewidth=1.4, label=f'{l}2', c=c)
                 ax[1].set_xlabel('Time (s)')
                 ax[1].yaxis.set_major_formatter(StrMethodFormatter('{x:,}'))
                 ax[1].legend(loc='upper right')
@@ -301,7 +303,7 @@ class HiSTIFFSData:
 
 
 if __name__ == "__main__":
-    data = HiSTIFFSData(date="2026-02-07", time="151554", debug=True)
+    data = HiSTIFFSData(date="2026-02-09", time="182020", debug=True)
     if data.exists:
         data.plot_raw_strains()
         plt.show()
