@@ -1,0 +1,77 @@
+{
+  "ui_preferences": {
+    "independent_plots": true,
+    "detect_screen_size": false,
+    "screen_width": 1920
+  },
+  "hardware_config": {
+    "adc_config": "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_90SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
+    "daq_config": "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano_01, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"
+  },
+  "sensors": [
+    {
+      "sn": "001",
+      "label": "A",
+      "length": "100",
+      "spacing": "40",
+      "saturation_load": "80",
+      "saturation_microstrain": "2500"
+    },
+    {
+      "sn": "002",
+      "label": "B",
+      "length": "120",
+      "spacing": "40",
+      "saturation_load": "80",
+      "saturation_microstrain": "2500"
+    },
+    {
+      "sn": "003",
+      "label": "C",
+      "length": "100",
+      "spacing": "40",
+      "saturation_load": "80",
+      "saturation_microstrain": "2500"
+    },
+    {
+      "sn": "004",
+      "label": "D",
+      "length": "120",
+      "spacing": "40",
+      "saturation_load": "80",
+      "saturation_microstrain": "2500"
+    },
+    {
+      "sn": "005",
+      "label": "E",
+      "length": "100",
+      "spacing": "40",
+      "saturation_load": "80",
+      "saturation_microstrain": "2500"
+    }
+  ],
+  "test_config": {
+    "custom_test_types": [],
+    "parameters_by_type": {}
+  },
+  "session_state": {
+    "last_num_sensors": 5,
+    "last_labels": [
+      "A",
+      "B",
+      "C",
+      "D",
+      "E"
+    ],
+    "last_sns": [
+      "001",
+      "002",
+      "003",
+      "004",
+      "005"
+    ]
+  },
+  "paths": {
+    "raw_data_folder": "C:/Users/Alex R. Williams/Documents/School/Grad/Hi-STIFFS/Code/Hi-STIFFS_2026_Winter/Raw Data"
+  }
+}
