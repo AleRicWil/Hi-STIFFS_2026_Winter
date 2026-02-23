@@ -31,11 +31,8 @@ HOST_PORT = 80
 # HOST_URL = f"http://{HOST_IP}:{HOST_PORT}/data"  # No longer used; switched to persistent TCP
 
 # Hardcoded paths (adjust as needed for your environment) - os.path ensures cross-platform path handling
-CALIBRATION_PATH = r'Hi-STIFFS_2026_Winter/AllInOne/calibration_history.csv'
+CALIBRATION_PATH = r'Hi-STIFFS_2026_Winter/Calibration/current_calibrations.csv'
 RAW_DATA_BASE = r'Hi-STIFFS_2026_Winter/Raw Data'
-
-# Batching configuration: Process received packets in batches every this interval (ms)
-BATCH_PROCESS_INTERVAL_MS = 100  # Default 0.1s; adjust for desired batch processing frequency
 
 class DataReceiverWriter(QtCore.QThread):
     """Thread for hosting a TCP server to receive WiFi data from Nano, processing to volts, writing to CSV, and emitting signals to other threads.
@@ -46,17 +43,50 @@ class DataReceiverWriter(QtCore.QThread):
     status_signal = QtCore.pyqtSignal(str)  # For status messages
     rate_updated = QtCore.pyqtSignal(float)  # Emits updated input rate in Hz
 
-    def __init__(self, save_format, num_sensors, sensor_labels, header_content=None):  # Made header_content optional with default None
+    def __init__(self, num_sensors, sensor_labels=['A', 'B', 'C', 'D', 'E'], sensor_sns=None, header_content=None):  # Made header_content optional with default None
         super().__init__()
         
         probe_num = '01'
         print(f"Datastream from Nano {probe_num} status:")
         self.num_sensors = num_sensors
         self.sensor_labels = sensor_labels
-        self.save_format = save_format
+        if sensor_sns is None:
+            sensor_sns = ['unknown'] * self.num_sensors
+        if len(sensor_sns) != self.num_sensors:
+            raise ValueError("Length of sensor_sns must match num_sensors/sensor_labels")
+        self.sensor_sns = sensor_sns
         self.running = True
         self.packet_times = collections.deque(maxlen=10000)  # Timestamps of received packets
         self.last_rate_time = time.time()
+        self.first_packet_time = None
+
+        print(self.sensor_labels)
+        print(self.sensor_sns)
+
+        # Load calibrations from current_calibrations.csv (cross-platform path handling via os.path)
+        self.calibrations = {}
+        sn_to_cal = {}
+        calibration_path = os.path.normpath(CALIBRATION_PATH)  # Normalize for cross-platform
+        if os.path.exists(calibration_path):
+            try:
+                cal_df = pd.read_csv(calibration_path, dtype={'sn': str})
+                print(cal_df)
+                for _, row in cal_df.iterrows():
+                    sn = row['sn']
+                    sn_to_cal[sn] = {
+                        'datetime': row.get('datetime', 'N/A'),
+                        'k1': row['k1'],
+                        'd1': row['d1'],
+                        'c1': row['c1'],
+                        'k2': row['k2'],
+                        'd2': row['d2'],
+                        'c2': row['c2']
+                    }
+
+            except Exception as e:
+                print(f"Warning: Failed to load {calibration_path}: {e}. Using default coefficients (1.0).")
+        else:
+            print(f"Warning: {calibration_path} not found. Using default coefficients (1.0).")
 
         # Create CSV file - os.makedirs and os.path.join ensure cross-platform directory creation and path compatibility
         now = datetime.datetime.now()
@@ -64,20 +94,29 @@ class DataReceiverWriter(QtCore.QThread):
         time_str = now.strftime("%H%M%S")
         parent_folder = os.path.join(RAW_DATA_BASE, date_str)
         os.makedirs(parent_folder, exist_ok=True)
-        csv_path = os.path.join(parent_folder, f'{date_str}_{time_str}_{probe_num}.csv')  # Added _01 suffix
-        self.csvfile = open(csv_path, 'w', newline='')
+        self.csv_path = os.path.join(parent_folder, f'{date_str}_{time_str}_{probe_num}.csv')  # Added _01 suffix
+        self.csvfile = open(self.csv_path, 'w', newline='')
         self.csvwriter = csv.writer(self.csvfile)
-        print(f"Created CSV for Nano_{probe_num} at:\t{csv_path}")
+        print(f"Created CSV for Nano_{probe_num} at:\t{self.csv_path}")
 
         print(f"Writing metadata to CSV...")
         self.csvwriter.writerow(['===BEGIN_METADATA==='])
         # Handle header_content: If None (e.g., standalone run), use minimal defaults; GUI will provide full list
         if header_content is None:
             header_content = []  # Empty default; add minimal required for standalone
-            for l in self.sensor_labels:
-                header_content += [f"ICB-Sensor {l}'s Latest Calibration: N/A, k{l}1: 1.0, d{l}1: 1.0, c{l}1: 1.0, k{l}2: 1.0, d{l}2: 1.0, c{l}2: 1.0"]
-        
+            for i, (l, sn) in enumerate(zip(self.sensor_labels, self.sensor_sns)):
+                header_content += [f"ICB-Sensor {l}'s Serial#: {sn}, Length: N/A, Spacing: N/A, Saturation Load: N/A, Factor of Safety at Saturation: N/A"]
+            
         header_content.insert(0, f'Test Name: {date_str}_{time_str}_{probe_num}, ' + 'yyyy-mm-dd_hhmmss_{probe_num}')
+        # Append calibration metadata lines (using loaded or default values)
+        for i, (l, sn) in enumerate(zip(self.sensor_labels, self.sensor_sns)):
+            print(f'Trying to write calibration for serial# {sn}')
+            cal = sn_to_cal.get(sn, {'datetime': 'N/A', 'k1': 1.0, 'd1': 1.0, 'c1': 1.0, 'k2': 1.0, 'd2': 1.0, 'c2': 1.0})
+            cal_line = f"ICB-Sensor {l}'s Latest Calibration: {cal['datetime']}, k{l}1: {cal['k1']}, d{l}1: {cal['d1']}, c{l}1: {cal['c1']}, k{l}2: {cal['k2']}, d{l}2: {cal['d2']}, c{l}2: {cal['c2']}"
+            header_content.append(cal_line)
+            # Store floats for live plotting (defaults to 1.0 if missing)
+            self.calibrations[l] = {k: float(cal[k]) for k in ['k1', 'd1', 'c1', 'k2', 'd2', 'c2']}
+        
         for row in header_content:
             row = row.split(', ')
             self.csvwriter.writerow(row)
@@ -170,7 +209,10 @@ class DataReceiverWriter(QtCore.QThread):
                 self.receive_queue.put(post_data)
 
                 self.packet_times.append(time.time())  # Record packet arrival time
-                
+                if self.first_packet_time is None:
+                    self.first_packet_time = time.time()
+                    print(f"Received first packet")
+
                 # Update input rate periodically
                 current_time = time.time()
                 if current_time - self.last_rate_time > 1.0:
@@ -306,27 +348,13 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.ReadWrite.status_signal.connect(print)  # Print status to console
         self.ReadWrite.rate_updated.connect(lambda rate: self.rate_label.setText(f"Input Rate: {rate:.1f} Hz"))
 
-        # Load calibration coefficients - pandas.read_csv is cross-platform for file reading
-        print(f"\tLoading sensor calibration...")
-        self.k1 = [1.0] * self.num_sensors
-        self.d1 = [1.0] * self.num_sensors
-        self.c1 = [1.0] * self.num_sensors
-        self.k2 = [1.0] * self.num_sensors
-        self.d2 = [1.0] * self.num_sensors
-        self.c2 = [1.0] * self.num_sensors
-        try:
-            cal_data = pd.read_csv(CALIBRATION_PATH)
-            latest_cal = cal_data.iloc[-1]
-            for i, s in enumerate(self.sensor_labels):
-                self.k1[i] = latest_cal.get(f'k_{s}1', 1.0)
-                self.d1[i] = latest_cal.get(f'd_{s}1', 1.0)
-                self.c1[i] = latest_cal.get(f'c_{s}1', 1.0)
-                self.k2[i] = latest_cal.get(f'k_{s}2', 1.0)
-                self.d2[i] = latest_cal.get(f'd_{s}2', 1.0)
-                self.c2[i] = latest_cal.get(f'c_{s}2', 1.0)
-            print(f"\tSuccessfully loaded calibration.")
-        except Exception as e:
-            print(f"\tError loading calibration: {str(e)}. Using defaults (all 1.0).")
+        cal = self.ReadWrite.calibrations
+        self.k1 = [cal[l]['k1'] for l in sensor_labels]
+        self.d1 = [cal[l]['d1'] for l in sensor_labels]
+        self.c1 = [cal[l]['c1'] for l in sensor_labels]
+        self.k2 = [cal[l]['k2'] for l in sensor_labels]
+        self.d2 = [cal[l]['d2'] for l in sensor_labels]
+        self.c2 = [cal[l]['c2'] for l in sensor_labels]
 
         # Performance optimizations for high refresh rates - pyqtgraph config is cross-platform via PyQt5
         pg.setConfigOptions(useOpenGL=True, antialias=False)
@@ -401,7 +429,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.display_time_range = 10.0  # Initial time range in seconds
 
         # Deques for plotting data
-        maxlen = 30 * 120  # Sufficient for ~30s at 120 Hz
+        maxlen = 30 * 300  # Sufficient for ~30s at 300 Hz
         self.times = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
         self.strains1 = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
         self.strains2 = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
@@ -436,23 +464,27 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
                 strain2 = strains2[i]
 
                 # Calculate force and position
-                force = 0# (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i])) / (self.k1[i] * self.k2[i] * (self.d2[i] - self.d1[i]))
-                num = 0# (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
-                den = 0# (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
-                position = 0# num / den if abs(den) > 2.5e-5 else 0.0
-                position = 0# 0.0 if position > 0.25 or position < -0.10 else position
+                try:
+                    force = (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i])) / (self.k1[i] * self.k2[i] * (self.d2[i] - self.d1[i]))
+                except: force = 0.0
+                try:
+                    num = (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
+                    den = (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
+                    position = num / den
+                    position = 0.0 if position > 0.50 or position < -0.50 else position
+                except: position = 0.0
 
                 self.times[i].append(time_sec)
-                self.strains1[i].append(strain1 * 1000.0)  # mV for display
-                self.strains2[i].append(strain2 * 1000.0)
+                self.strains1[i].append(strain1)
+                self.strains2[i].append(strain2)
                 self.forces[i].append(force)
                 self.positions[i].append(position * 100)  # to cm
 
     def update_plots(self):
         """Update all plot curves and ranges."""
         for i in range(self.num_sensors):
-            # if i == 1:
-            #     continue
+            if i != 0:
+                continue
             self.curves_ch1[i].setData(self.times[i], self.strains1[i])
             self.curves_ch2[i].setData(self.times[i], self.strains2[i])
             self.curves_force[i].setData(self.times[i], self.forces[i])
@@ -497,7 +529,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.ReadWrite.running = False
         # self.ReadWrite.wait()  # Wait for thread to finish
 
-def run_collection(save_format='raw', plot=True, sensors='A', header_content=None):  # header_content now optional (GUI provides it)
+def run_collection(save_format='raw', plot=True, sensors='A', header_content=None, sensor_sns='001'):  # header_content now optional (GUI provides it)
     if sensors.isdigit():
         num = int(sensors)
         if num < 1 or num > 5:
@@ -509,7 +541,7 @@ def run_collection(save_format='raw', plot=True, sensors='A', header_content=Non
             raise ValueError("Invalid sensor labels; must be comma-separated from A-E, no duplicates.")
     num_sensors = len(sensor_labels)
 
-    ReadWrite = DataReceiverWriter(save_format, num_sensors, sensor_labels, header_content)  # Pass header_content directly
+    ReadWrite = DataReceiverWriter(num_sensors, sensor_labels, sensor_sns, header_content)  # Pass header_content directly
     if plot:
         app = QtWidgets.QApplication([])  # QApplication is cross-platform for GUI/plotting
         window = RealTimePlotWindow(ReadWrite, num_sensors, sensor_labels)
@@ -540,16 +572,6 @@ if __name__ == "__main__":
         "Note: Mediums with 6in spacing at 25ft/min. Tops removed.",
         "Test Type: Demo",
         f"Number of ICB-Sensors: 5, Sensor Label(s): {args.sensors}",
-        "ICB-Sensor A's Serial#: 001, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
-        "ICB-Sensor A's Latest Calibration: N/A, kA1: 1.0, dA1: 1.0, cA1: 1.0, kA2: 1.0, dA2: 1.0, cA2: 1.0",
-        "ICB-Sensor B's Serial#: 002, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
-        "ICB-Sensor B's Latest Calibration: N/A, kB1: 1.0, dB1: 1.0, cB1: 1.0, kB2: 1.0, dB2: 1.0, cB2: 1.0",
-        "ICB-Sensor C's Serial#: 003, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
-        "ICB-Sensor C's Latest Calibration: N/A, kC1: 1.0, dC1: 1.0, cC1: 1.0, kC2: 1.0, dC2: 1.0, cC2: 1.0",
-        "ICB-Sensor D's Serial#: 004, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
-        "ICB-Sensor D's Latest Calibration: N/A, kD1: 1.0, dD1: 1.0, cD1: 1.0, kD2: 1.0, dD2: 1.0, cD2: 1.0",
-        "ICB-Sensor E's Serial#: 005, Length: 120mm, Spacing: 40mm, Saturation Load: 80N, Factor of Safety at Saturation: 1.5",
-        "ICB-Sensor E's Latest Calibration: N/A, kE1: 1.0, dE1: 1.0, cE1: 1.0, kE2: 1.0, dE2: 1.0, cE2: 1.0",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_90SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"
     ]

@@ -331,15 +331,15 @@ class HeaderConfigDialog(QDialog):
             header.append(f"Test Number in Session: {self.test_number_spin.value()}, Time since Last Test: {self.test_rest_edit.text()}")
 
         # number of sensors and labels
-        labels = ','.join([combo.currentText() for combo in self.sensor_labels])
-        header.append(f"Number of ICB-Sensors: {self.num_sensors_spin.value()}, Sensor Label(s): {labels}")
+        labels = ' '.join([combo.currentText() for combo in self.sensor_labels])
+        serial_nums = ' '.join([combo.currentText() for combo in self.sensor_sns])
+        header.append(f"Number of ICB-Sensors: {self.num_sensors_spin.value()}, Sensor Label(s): {labels}, Sensor Serial#(s): {serial_nums}")
 
         # sensor info
         for i, l in enumerate([combo.currentText() for combo in self.sensor_labels]):
             sn = [combo.currentText() for combo in self.sensor_sns][i]
             sensor = next((s for s in self.sensors if s['sn'] == sn), {})
             header.append(f"ICB-Sensor {l}'s Serial#: {sn}, Length (mm): {sensor.get('length', '')}, Spacing (mm): {sensor.get('spacing', '')}, Saturation Load (N): {sensor.get('saturation_load', '')}, Microstrain at Saturation: {sensor.get('saturation_microstrain', '')}")
-            header.append(f"ICB-Sensor {l}'s Latest Calibration: N/A, k{l}1: 1.0, d{l}1: 1.0, c{l}1: 1.0, k{l}2: 1.0, d{l}2: 1.0, c{l}2: 1.0")
 
         # system info
         self.adc_config = self.settings['hardware_config'].get('adc_config', "")
@@ -442,9 +442,9 @@ class CollectPage(QWidget):
         pass
 
     def configure_header(self):
-        dialog = HeaderConfigDialog(self)
-        if dialog.exec_() == QDialog.Accepted:
-            self.header_content = dialog.get_header_content()
+        self.dialog = HeaderConfigDialog(self)
+        if self.dialog.exec_() == QDialog.Accepted:
+            self.header_content = self.dialog.get_header_content()
             self.header_configured = True
             self.status_label.setText("Header configured. Ready to start.")
 
@@ -463,8 +463,11 @@ class CollectPage(QWidget):
             return
 
         try:
-            labels_part = sensors_line.split("Sensor Label(s): ")[1].strip()
-            sensors = labels_part.replace(' ', '')  # Remove any spaces for clean comma-separated string
+            parts = sensors_line.split(',')
+            labels_part = parts[1].split("Sensor Label(s): ")[1].strip()
+            serial_nums_part = parts[2].split("Sensor Serial#(s): ")[1].strip()
+            sensor_labels = labels_part
+            serial_nums = serial_nums_part
         except IndexError:
             QMessageBox.warning(self, "Error", "Invalid sensor label format in header.")
             return
@@ -480,8 +483,8 @@ class CollectPage(QWidget):
 
         # Initialize data receiver and plot window directly (avoids creating a new QApplication, integrates with existing GUI app)
         # This approach ensures cross-platform compatibility as PyQt5 handles widget creation and threading uniformly across OSes
-        self.ReadWrite = cd.DataReceiverWriter(save_format='raw', num_sensors=num_sensors, sensor_labels=sensors.split(','), header_content=self.header_content)
-        self.window = cd.RealTimePlotWindow(self.ReadWrite, num_sensors, sensors.split(','))
+        self.ReadWrite = cd.DataReceiverWriter(num_sensors=num_sensors, sensor_sns=serial_nums.split(' '), sensor_labels=sensor_labels.split(' '), header_content=self.header_content)
+        self.window = cd.RealTimePlotWindow(self.ReadWrite, num_sensors, sensor_labels.split(' '))
         self.ReadWrite.start()
 
     def stop_collection(self):

@@ -21,7 +21,7 @@ def run_calibration(port, config, status_queue):
         config (dict): Configuration dictionary with calibration parameters.
         status_queue (Queue): Queue to send status messages to the UI.
     """
-    parent_folder = os.path.join(r'Hi-STIFFS_2026_Winter\Raw Data', f'{config["date"]}')
+    parent_folder = os.path.join(r'Hi-STIFFS_2026_Winter/Raw Data', f'{config["date"]}')
     os.makedirs(parent_folder, exist_ok=True)
     summary_path = os.path.join(parent_folder, f'{config["date"]}_calibration_summary.csv')
     summary_data = []

@@ -7,7 +7,6 @@
 # Plot number ranges:
 #   0-9: raw strains
 
-
 import os
 import csv
 import pandas as pd
@@ -24,13 +23,29 @@ HEADER_MARKER = r'===END_METADATA==='
 DATA_MARKER = r'===BEGIN_DATA==='
 
 class HiSTIFFSData:
-    def __init__(self, date, time, nano_label='01', debug=False, base=RAW_DATA_BASE):
+    def __init__(self, date, time, nano_label='01', debug=False, base=RAW_DATA_BASE, file_path=None):
         # Form CSV path
         # Note: Using os.path.join ensures cross-platform compatibility for path construction on Windows, Linux, and Raspberry Pi.
-        self.date = date
-        self.time = time
+        
         self.nano_label = nano_label
-        self.data_csv_path = os.path.join(base, date, f"{date}_{time}_{nano_label}.csv")
+
+        if file_path is None:
+            self.date = date
+            self.time = time
+            self.data_csv_path = os.path.join(base, self.date, f"{self.date}_{self.time}_{self.nano_label}.csv")
+        else:
+            self.data_csv_path = file_path
+            # Normalize the path by replacing backslashes with forward slashes
+            normalized = file_path.replace('\\', '/')
+
+            # Split to get the filename
+            parts = normalized.split('/')
+            filename = parts[-1]
+
+            # Split the filename to extract date and time
+            file_parts = filename.rsplit('_', 2)
+            self.date = file_parts[0]
+            self.time = file_parts[1]
         if not os.path.exists(self.data_csv_path):
             self.exists = False
             print(f"No such data file at: {self.data_csv_path}")
@@ -95,6 +110,12 @@ class HiSTIFFSData:
             print(f'sensors info: {sensors_info}')
             if debug: print(f"num sensors: {num_sensors}"); print(f"sensor labels: {self.sensor_labels}")
 
+            if self.test_type == 'Calibration':
+                print('This is a calibration file. Ignoring most of metadata')
+                for l in self.sensor_labels:
+                    self.data_dict[f'Sensor_{l}'] = {'place_holder': None}
+                return
+
             # Sensor info
             sensor_info = []
             for l in self.sensor_labels:
@@ -132,7 +153,8 @@ class HiSTIFFSData:
             self.filter_window = int(round(self.data_rate/20.0 + 0.01, 0))
             if debug: print(f'ADC info: {ADC_info}'); print(f'data rate: {data_rate_str}, {self.data_rate}Hz')
         except:
-            raise ValueError("Error while parsing metadata")
+            pass
+            # raise ValueError("Error while parsing metadata")
 
     def repack_data(self, data):
         for l in self.sensor_labels:
@@ -221,8 +243,11 @@ class HiSTIFFSData:
                 s = self.data_dict[f'Sensor_{l}']
                 if not hasattr(s, 'ini_1'):
                     self.describe_channels()
-                if not hasattr(s, 'strain_1_filter'):
+                if not hasattr(s, 'strain_1_filter') and self.test_type != 'Calibration':
                     self.filter_channels()
+                elif self.test_type == 'Calibration':
+                    s['strain_1_filter'] = s['strain_1_raw']
+                    s['strain_2_filter'] = s['strain_2_raw']
 
                 # Channel 1 (left subplot)
                 ax[0].plot(s['time'], s['strain_1_raw'] - s['ini_1'],
@@ -303,7 +328,7 @@ class HiSTIFFSData:
 
 
 if __name__ == "__main__":
-    data = HiSTIFFSData(date="2026-02-09", time="182020", debug=True)
+    data = HiSTIFFSData(date="2026-02-20", time="195821", debug=True)
     if data.exists:
         data.plot_raw_strains()
         plt.show()

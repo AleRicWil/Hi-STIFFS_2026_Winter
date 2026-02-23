@@ -138,7 +138,8 @@ const char* ssid = "Hi-STIFFS_Host";       // Host WiFi network name (SSID) - ch
 const char* password = "BYUCropBio";       // Host WiFi password (minimum 8 characters)
 const char* ota_password = "BYUCropBio";   // Optional OTA password for security (change this)
 // Host server details
-const char* host_ip = "192.168.137.1";       // IPv4 of the host server (e.g., Raspberry Pi or laptop), from device settings, not Python code
+// const char* host_ip = "192.168.137.1";       // IPv4 of the host server (e.g., Raspberry Pi or laptop), from device settings, not Python code
+const char* host_ip = "192.168.137.1";    // For Pi_001
 const int host_port = 80;                  // Port on host for data streaming
 WiFiClient client;                         // Global client for sending data to host
 
@@ -573,7 +574,7 @@ void connectToHost() {
     unsigned long startAttempt = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - startAttempt < 8000) {
       delay(500);
-      if (hasSerial) Serial.print(".");
+      if (hasSerial) Serial.print("."); Serial.print(WiFi.status());
     }
 
     if (WiFi.status() == WL_CONNECTED) {
@@ -651,6 +652,21 @@ void setup() {
     Serial.print(ssid);
     Serial.print(". Password: ");
     Serial.println(password);
+  }
+
+  WiFi.mode(WIFI_STA);
+  int n = WiFi.scanNetworks();
+  Serial.println("Scan done");
+  if (n == 0) {
+    Serial.println("No networks found");
+  } else {
+    for (int i = 0; i < n; ++i) {
+      Serial.print(WiFi.SSID(i));
+      Serial.print(" (");
+      Serial.print(WiFi.RSSI(i));
+      Serial.print(" dBm)");
+      Serial.println();
+    }
   }
 
   // OTA setup
