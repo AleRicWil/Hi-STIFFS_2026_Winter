@@ -2,7 +2,7 @@
 Test Name: 2026-03-01_140707_01,yyyy-mm-dd_hhmmss_{probe_num}
 Note: First data
 Test Type: Lab Medium. 3mph
-Number of ICB-Sensors: 5,Sensor Label(s): A B C D E
+Number of ICB-Sensors: 5,Sensor Label(s): A B C D E,Sensor SNs: 001 002 003 004 005
 Analog-to-Digital Converter: ADS1220,Mode: Turbo,Data Rate: DR_330SPS,Analog Excitation/Reference Voltage: 5.1V +/-2mV
 DAQ Microcontroller: Arduino Nano ESP32,ID: Hi-STIFFS_Nano,CPU Clock: 240MHz,Cores: 2,Data-stream Connection: Wi-Fi
 ICB-Sensor A's Latest Calibration: 2026-02-28T18:14:36.895065,kA1: 349273.60227475094,dA1: 0.0045245532907721,cA1: 1102.3374494942836,kA2: 346675.0994387471,dA2: 0.0451524381538289,cA2: 681.8182371353614

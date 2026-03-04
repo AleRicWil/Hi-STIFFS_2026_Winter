@@ -1,115 +1,18 @@
-import serial
+# Standard libraries
+import os
 import csv
-import keyboard
+from pathlib import Path
+
+# Installed packages
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import SpanSelector
 import pandas as pd
-from datetime import datetime
-import time
-import os
 from sklearn.linear_model import LinearRegression
-from scipy.optimize import minimize
 
-from collect_data import DataReceiverWriter
+# Workspace scripts
 from process import HiSTIFFSData
 from sensor_registry import SensorRegistry
-from config import Config
-
-
-def run_calibration(sensor_label, sensor_serial_number, loads, positions, registry=None):
-    """Run calibration by collecting strain data for each mass-position pair.
-    FIXED: correct sensor count=1, dynamic labels, header now uses real label (cross-platform)."""
-    registry = registry or SensorRegistry()
-    registry.set_mapping({sensor_label: sensor_serial_number})
-
-    l = sensor_label.upper()
-    sn = str(sensor_serial_number).zfill(3)
-    print(f"Calibration procedure for sensor {sn} on Hi-STIFFS DAQ position {l}")
-    print(f"Will collect static loading for {loads} N each at {positions} mm")
-    file_paths = {}
-    for pos in positions:
-        for load in loads:       
-            header_content = [
-                "Test Type: Calibration",
-                f"Number of ICB-Sensors: 1, Sensor Label(s): {l}",
-                f"Sensor Serial#: {sn}, Sensor Label on Hi-STIFFS DAQ: {l}",
-                f'Load Type: Force (N), Force Control: Uniaxial Test Machine, Position Control: Visual Tick Marks (mm)',
-                f"Loads: [{' '.join(str(x) for x in loads)}], Positions: [{' '.join(str(x) for x in positions)}]",
-                f"This Load: {load} N, This Position: {pos} mm"
-            ]
-            
-            wait = True
-            print(f"\nPress 'space' to start collection {load}N_{pos}mm")
-            while wait:
-                if keyboard.is_pressed('space'):
-                    wait = False
-                time.sleep(0.01)
-
-            print(f'Starting collection for {load}N_{pos}mm...')
-            # FIXED: 1 sensor, correct labels/sns so CSV + unpack match Arduino
-            ReadWrite = DataReceiverWriter(
-                num_sensors=1,
-                sensor_labels=[l],
-                sensor_sns=[sn],
-                header_content=header_content,
-                registry=registry
-            )
-            file_paths[f'{load}N_{pos}mm'] = ReadWrite.csv_path
-            ReadWrite.status_signal.connect(print) 
-            ReadWrite.start()      
-
-            print(f'Collection initializing for {load}N_{pos}mm...')
-            while ReadWrite.first_packet_time is None:
-                time.sleep(0.1)
-
-            wait = True
-            print("Press 'space' to stop after 3 seconds ('space' is blocked until 3sec timer expires).")
-            time.sleep(1)      
-            while wait:
-                if keyboard.is_pressed('space'):
-                    wait = False
-                    ReadWrite.running = False
-                    ReadWrite.wait()
-                time.sleep(0.01)
-               
-            print('Collection stopped.')
-            time.sleep(1)
-
-            print('Calculating average...')
-            data = HiSTIFFSData(None, None, file_path=ReadWrite.csv_path)
-            s = data.data_dict[f'Sensor_{l}']
-            t_min = np.min(s['time'])
-            t_max = np.max(s['time'])
-            strain_1 = s['strain_1_raw']
-            strain_2 = s['strain_2_raw']
-
-            mask = (s['time'] >= t_min + 1) & (s['time'] <= t_max - 1)
-            avg_1 = np.average(strain_1[mask])
-            avg_2 = np.average(strain_2[mask])
-
-            calibration_path = os.path.join(os.path.dirname(ReadWrite.csv_path), f"calibration_{sn}.csv")
-
-            headers = ["Load (N)", "Position (mm)", f"Strain_{l}1_avg", f"Strain_{l}2_avg"]
-            if not os.path.exists(calibration_path):
-                with open(calibration_path, 'w', newline='') as csvfile:
-                    writer = csv.writer(csvfile)
-                    writer.writerow(headers)
-
-            row = [load, pos, avg_1, avg_2]
-            with open(calibration_path, 'a', newline='') as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerow(row)
-
-            print('Stored average')
-
-    print("\nCollected file paths:")
-    for key in file_paths:
-        print(f"{key} → {file_paths[key]}")
-        data = HiSTIFFSData(None, None, file_path=file_paths[key])
-        data.plot_raw_strains()       
-
-    return calibration_path
 
 
 def calculate_coefficients(summary_path, registry=None):
@@ -123,8 +26,8 @@ def calculate_coefficients(summary_path, registry=None):
         str: Formatted string of calculated coefficients.
     """
     registry = registry or SensorRegistry()
-    sn = summary_path[-7:-4]    # serial number of sensor
-    print(sn)
+    sn = Path(summary_path).stem.split('_')[-1].zfill(3)    # serial number of sensor
+    print(f'Parsed Serial#: {sn}')
 
     with open(summary_path, 'r') as f:
         reader = csv.reader(f)
@@ -235,127 +138,6 @@ def calculate_coefficients(summary_path, registry=None):
         return ""
 
 
-def generate_summary(paths):
-    '''
-    creates calibration_{sn}.csv for a given set of raw data files.
-    reads load and position from each file's header
-    
-    :param paths: list of file paths where a previous calibration raw data was stored
-    '''
-    if not paths:
-        print("No paths provided.")
-        return
-
-    # Parse sn and l from the first file
-    with open(paths[0], 'r') as f:
-        lines = f.readlines()
-
-    sn = None
-    l = None
-    for line in lines:
-        if "Sensor Serial#:" in line:
-            # Format: "Sensor Serial#: {sn}, Sensor Label on Hi-STIFFS DAQ: {l}"
-            parts = line.split(',')
-            if len(parts) >= 2:
-                sn_part = parts[0].split(':')
-                l_part = parts[1].split(':')
-                if len(sn_part) > 1 and len(l_part) > 1:
-                    sn = sn_part[1].strip()
-                    l = l_part[1].strip()
-                    print(sn, l)
-            break
-
-    if not sn or not l:
-        print("Error: Could not parse sensor serial number or label from the first file.")
-        return
-
-    # Check that all files have the same sn and l
-    for path in paths[1:]:
-        with open(path, 'r') as f:
-            lines = f.readlines()
-
-        this_sn = None
-        this_l = None
-        for line in lines:
-            if "Sensor Serial#:" in line:
-                parts = line.split(',')
-                if len(parts) >= 2:
-                    sn_part = parts[0].split(':')
-                    l_part = parts[1].split(':')
-                    if len(sn_part) > 1 and len(l_part) > 1:
-                        this_sn = sn_part[1].strip()
-                        this_l = l_part[1].strip()
-                break
-
-        if this_sn != sn or this_l != l:
-            print(f"Error: Mismatch in sensor serial number or label in file {path}. Expected sn: {sn}, l: {l}; Found sn: {this_sn}, l: {this_l}")
-            return
-
-    # Prepare headers for the summary CSV
-    headers = ["Load (N)", "Position (mm)", f"Strain_{l}1_avg", f"Strain_{l}2_avg"]
-
-    # Collect data rows
-    data_rows = []
-    for path in paths:
-        # Parse load and position from header
-        with open(path, 'r') as f:
-            lines = f.readlines()
-
-        load = None
-        pos = None
-        for line in lines:
-            if "This Load:" in line:
-                # Format: "This Load: {load} N, This Position: {pos} mm"
-                parts = line.split(',')
-                if len(parts) >= 2:
-                    load_part = parts[2].split(':')
-                    pos_part = parts[3].split(':')
-                    print(load_part, pos_part)
-                    if len(load_part) > 1 and len(pos_part) > 1:
-                        load_str = load_part[1].strip().split(' ')[0]
-                        pos_str = pos_part[1].strip().split(' ')[0]
-                        try:
-                            load = float(load_str)
-                            pos = float(pos_str)
-                        except ValueError:
-                            pass
-                break
-
-        if load is None or pos is None:
-            print(f"Warning: Could not parse load or position from {path}. Skipping.")
-            continue
-
-        # Load and process the data
-        data = HiSTIFFSData(None, None, file_path=path)
-        s = data.data_dict[f'Sensor_{l}']
-        t_min = np.min(s['time'])
-        t_max = np.max(s['time'])
-        strain_1 = s['strain_1_raw']
-        strain_2 = s['strain_2_raw']
-
-        mask = (s['time'] >= t_min + 1) & (s['time'] <= t_max - 1)
-        avg_1 = np.average(strain_1[mask])
-        avg_2 = np.average(strain_2[mask])
-
-        data_rows.append([load, pos, avg_1, avg_2])
-
-    if not data_rows:
-        print("No valid data rows collected.")
-        return
-
-    # Determine the directory from the first path and create calibration path
-    dir_path = os.path.dirname(paths[0])
-    calibration_path = os.path.join(dir_path, f"calibration_{sn}.csv")
-
-    # Write the summary CSV
-    with open(calibration_path, 'w', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        writer.writerow(headers)
-        writer.writerows(data_rows)
-
-    print(f"Summary CSV generated at: {calibration_path}")
-
-
 def summary_from_dwells(collection_path):
     '''
     Generates summary CSV from a single raw data file containing multiple dwells 
@@ -364,26 +146,22 @@ def summary_from_dwells(collection_path):
     :param collection_path: file path of the raw data file containing multiple dwells
     '''
     # Load the data using HiSTIFFSData
-    data = HiSTIFFSData(None, None, file_path=collection_path)
+    data = HiSTIFFSData(None, None, file_path=collection_path, debug=True)
     
     # Validate test type
     if data.test_type != 'Calibration':
         raise ValueError("Input file must be a calibration type collection.")
     
     # Extract sensor label (l) and serial number (sn)
-    sn = '003'
-    l = 'C'
-    loads = [10, 35, 70]
-    positions = [60, 75, 95]
+    sn = data.sensor_sns[0]
+    l = data.sensor_labels[0]
+    loads = data.loads
+    positions = data.positions
 
     if not sn or not l:
         raise ValueError("Failed to parse sensor serial number or label from metadata.")
     if not loads or not positions:
         raise ValueError("Failed to parse loads or positions from metadata.")
-    
-    print(f"Parsed loads (N): {loads}")
-    print(f"Parsed positions (mm): {positions}")
-    print(f"Sensor Serial#: {sn}, Label: {l}")
     
     # Generate dwell sequence: all loads at each position
     dwell_conditions = [(pos, load) for pos in positions for load in loads]
@@ -712,7 +490,6 @@ def zero_shift_correction(collection_path):
     plt.show(block=True)
 
 
-
 if __name__ == "__main__":
     # run_calibration('A', '001', [10, 50], [60, 100])   
     old_paths = [r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163645_01.csv',
@@ -722,7 +499,7 @@ if __name__ == "__main__":
     # generate_summary(old_paths)
 
     # zero_shift_correction(r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-28\2026-02-28_202507_01.csv')
-    # summary_from_dwells(r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-28\2026-02-28_202507_01.csv')
+    # summary_from_dwells(r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-28\2026-02-28_180222_01.csv')
     calculate_coefficients(r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-28\calibration_003.csv')
 
     

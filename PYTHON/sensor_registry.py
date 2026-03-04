@@ -1,11 +1,15 @@
 """Single source of truth for sensor labels, serial numbers, and calibration coefficients.
 Fully cross-platform via pathlib.Path — identical on Windows 10/11, Ubuntu, and Raspberry Pi 5."""
 
+# Standard libraries
 from pathlib import Path
-import pandas as pd
 import csv
 from datetime import datetime
 
+# Installed packages
+import pandas as pd
+
+# Workspace scripts
 from config import Config
 
 class SensorRegistry:
@@ -53,13 +57,13 @@ class SensorRegistry:
         return self.coeffs_by_sn.get(sn, self._default_coeffs())
 
     def _default_coeffs(self):
-        return {'datetime': 'N/A', 'k1': 1.0, 'd1': 0.0, 'c1': 0.0,
-                'k2': 1.0, 'd2': 0.0, 'c2': 0.0}
+        return {'datetime': 'N/A', 'k1': 1.0, 'd1': 1.0, 'c1': 0.0,
+                'k2': 1.0, 'd2': 1.0, 'c2': 0.0}
 
     def update_coeffs(self, sn: str, coeffs: dict):
         """Centralized update (called from calculate_coefficients). Cross-platform save."""
         sn = str(sn).zfill(3)
-        now = datetime.now().isoformat()
+        now = datetime.now().strftime("%Y-%m-%d_%H%M%S")
         coeffs_with_dt = {**coeffs, 'datetime': now}
         self.coeffs_by_sn[sn] = coeffs_with_dt
 

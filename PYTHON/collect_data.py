@@ -1,19 +1,20 @@
+# Standard libraries
 import csv
 import collections
 import datetime
-import os
 import time
 import socket
 import struct
-import keyboard
-import numpy as np
-import pandas as pd
-import pyqtgraph as pg
 import argparse
-from PyQt5 import QtWidgets, QtCore
 import queue  # For thread-safe queues
 import threading  # For separate processing thread
 
+# Installed packages
+import numpy as np
+import pyqtgraph as pg
+from PyQt5 import QtWidgets, QtCore
+
+# Workspace scripts
 from sensor_registry import SensorRegistry  # Import the SensorRegistry class
 from config import Config
 
@@ -27,6 +28,10 @@ VOLTS_PER_LSB = VREF / (ADS1220_PGA_GAIN * TWO_TO_23)
 # === Plotting parameters ===
 PLOT_REFRESH_HZ = 30  # Refresh rate for plot updates in Hz
 PROCESS_FPS = 30  # Set desired FPS for processing/dequeuing (e.g., 30 for smooth plotting)
+SCREEN_SCALE = 1.3
+SCREEN_WIDTH = int(1920*SCREEN_SCALE)
+SCREEN_HEIGHT = int(1080*SCREEN_SCALE)
+
 
 class DataReceiverWriter(QtCore.QThread):
     """Thread for hosting a TCP server to receive WiFi data from Nano, processing to volts, writing to CSV, and emitting signals to other threads.
@@ -62,12 +67,8 @@ class DataReceiverWriter(QtCore.QThread):
         print(self.sensor_sns)
 
         # Create CSV file - os.makedirs and os.path.join ensure cross-platform directory creation and path compatibility
-        now = datetime.datetime.now()
-        date_str = now.strftime("%Y-%m-%d")
-        time_str = now.strftime("%H%M%S")
-        parent_folder = Config.RAW_DATA_BASE / date_str
-        parent_folder.mkdir(parents=True, exist_ok=True)
-        self.csv_path = Config.get_timestamped_filename("01")
+ 
+        self.csv_path, date_str, time_str = Config.get_timestamped_filename("01")
         self.csvfile = open(self.csv_path, 'w', newline='')
         self.csvwriter = csv.writer(self.csvfile)
         print(f"Created CSV for Nano_{probe_num} at:\t{self.csv_path}")
@@ -360,8 +361,8 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.curves_ch1 = []
         self.curves_ch2 = []
         for i, s in enumerate(self.sensor_labels):
-            self.curves_ch1.append(self.plot_ch1.plot(pen=colors[i], name=f'{s}1 Strain'))
-            self.curves_ch2.append(self.plot_ch2.plot(pen=colors[i], name=f'{s}2 Strain'))
+            self.curves_ch1.append(self.plot_ch1.plot(pen=colors[i], name=f'{s}1'))
+            self.curves_ch2.append(self.plot_ch2.plot(pen=colors[i], name=f'{s}2'))
 
         layout = QtWidgets.QVBoxLayout()
         layout.addWidget(self.win_strain)
@@ -371,7 +372,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         preset_layout = QtWidgets.QHBoxLayout()
         preset_label = QtWidgets.QLabel("Time Range (s):")
         preset_layout.addWidget(preset_label)
-        presets = [0.1, 0.5, 1, 3, 5, 10, 15, 30]
+        presets = [1, 3, 5, 10, 15, 30]
         for preset in presets:
             btn = QtWidgets.QPushButton(str(preset))
             btn.clicked.connect(lambda _, p=preset: self.set_time_range(p))
@@ -386,25 +387,27 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         central_widget = QtWidgets.QWidget()
         central_widget.setLayout(layout)
         self.setCentralWidget(central_widget)
-        self.resize(1000, 600)
+        self.resize(SCREEN_WIDTH, int(SCREEN_HEIGHT/2))
         self.move(0, 0)
         self.show()  # Show this main window
 
         # Force and position plot window
         print(f"\t\tCreating force/position plots...")
         self.win_force_pos = pg.GraphicsLayoutWidget(title="Force and Position")
-        self.win_force_pos.resize(1000, 600)
-        self.win_force_pos.move(1000, 0)
         self.plot_force = self.win_force_pos.addPlot(title='Force')
+        self.plot_force.setLabel('left', '', units='N')
         self.plot_force.addLegend()
         self.plot_pos = self.win_force_pos.addPlot(title='Position')
+        self.plot_pos.setLabel('left', '', units='mm')
         self.plot_pos.addLegend()
 
         self.curves_force = []
         self.curves_pos = []
         for i, s in enumerate(self.sensor_labels):
-            self.curves_force.append(self.plot_force.plot(pen=colors[i], name=f'Force {s}'))
-            self.curves_pos.append(self.plot_pos.plot(pen=colors[i], name=f'Position {s}'))
+            self.curves_force.append(self.plot_force.plot(pen=colors[i], name=f'{s}'))
+            self.curves_pos.append(self.plot_pos.plot(pen=colors[i], name=f'{s}'))
+        self.win_force_pos.resize(SCREEN_WIDTH, int(SCREEN_HEIGHT/2))
+        self.win_force_pos.move(0, int(SCREEN_HEIGHT/2)+60)
         self.win_force_pos.show()  # Show it here
 
         # Install event filter on force/pos window to catch space presses there too
@@ -482,7 +485,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
                 try:
                     num = (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
                     den = (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
-                    position = num / den if den != 0 and abs(den) > 1e-1 else 0.0
+                    position = num / den if den != 0 and abs(den) > 1e9 else 0.0
                     position = position if position <= 0.15 and position >= 0.03 else 0.0  # Sanity check for position (e.g., max 0.2m)
                 except:
                     position = 0.0
@@ -491,7 +494,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
                 self.strains1[i].append(strain1)
                 self.strains2[i].append(strain2)
                 self.forces[i].append(force)
-                self.positions[i].append(position * 100)  # to cm
+                self.positions[i].append(position * 1000)  # to mm
 
     def update_plots(self):
         """Update all plot curves and ranges."""
@@ -587,8 +590,8 @@ if __name__ == "__main__":
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
         "Note: First data",
-        "Test Type: Lab Medium. 0.5mph",
-        f"Number of ICB-Sensors: 5, Sensor Label(s): {args.sensors}",
+        "Test Type: Demo",
+        f"Number of ICB-Sensors: 5, Sensor Label(s): {args.sensors}, Sensor SNs: 001 002 003 004 005",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_330SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"
     ]
