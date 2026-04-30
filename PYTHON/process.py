@@ -8,12 +8,17 @@
 import os
 import csv
 from pathlib import Path
+import copy
+import keyboard
+import time
 
 # Installed packages
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.widgets import SpanSelector, Button, RadioButtons
 from matplotlib.ticker import StrMethodFormatter
+import matplotlib.gridspec as gridspec
+from matplotlib.colors import ListedColormap
 import pandas as pd
 from scipy.signal import savgol_filter
 
@@ -21,12 +26,22 @@ from scipy.signal import savgol_filter
 from config import Config
 
 class HiSTIFFSData:
+    # === load raw data and calculate force & position ===
     def __init__(self, date, time, nano_label='01', debug=False, file_path=None):
         # Fully cross-platform: uses pathlib.Path everywhere (Win / Ubuntu / RPi5 identical)
         self.nano_label = nano_label
         self.exists = False
         self.has_force_pos = False
         self.colors = ['r', 'g', 'c', 'y', 'm']
+        self.sensor_starts = np.array([0.0, 142.47, 345.33, 508.12, 670.59]) * 1e-3
+        # self.sensor_starts_dy = np.array([0.0, 141.36, 335.09, 496.19, 650.19]) * 1e-3  # v3.1
+        self.sensor_starts_dy = np.array([0.0, 0.0, 362.18, 545.37, 699.37]) * 1e-3     # v3.2
+        self.min_pos = 0.05
+        self.fp_thresh = 0.10
+        self.yaw = np.radians(20)
+        self.rel_deflection = 0.06 # m, parallel distance between frist and third sensor
+        self.height = 0.785  # m, height of contact point between probe and stalk
+        self.stalk_spacing = 0.1524 # m, physical spacing between stalks
 
         if file_path is None:
             self.date = date
@@ -58,6 +73,8 @@ class HiSTIFFSData:
 
         # Re-pack all data in appropriate data-types
         self.repack_data(data)
+
+        print('Raw data reading complete\n')
 
     def parse_metadata(self, debug):
         # Find metadata end and data start tags — unchanged, works on all OSes
@@ -188,11 +205,21 @@ class HiSTIFFSData:
             raise ValueError(f"Error while parsing metadata: {e}")
 
     def repack_data(self, data):
-        for l in self.sensor_labels:
+        for i, l in enumerate(self.sensor_labels):
             sensor_data = {'time': data[f'Time_{l}_sec'].to_numpy(dtype=np.float64),
                            'strain_1_raw': data[f'Strain_{l}1_raw'].to_numpy(dtype=np.int32),
                            'strain_2_raw': data[f'Strain_{l}2_raw'].to_numpy(dtype=np.int32)}
             self.data_dict[f'Sensor_{l}'].update(sensor_data)
+            if l in ['A', 'C', 'E']:
+                self.data_dict[f'Sensor_{l}']['length'] = 0.100
+                self.data_dict[f'Sensor_{l}']['type'] = 'straight'
+            elif l in ['B', 'D']:
+                self.data_dict[f'Sensor_{l}']['length'] = 0.120
+                self.data_dict[f'Sensor_{l}']['type'] = 'angled'
+                self.data_dict[f'Sensor_{l}']['abs(yaw)_rad'] = self.yaw
+            if l == 'C':
+                self.data_dict[f'Sensor_{l}']['parallel_deflection'] = self.rel_deflection
+            self.data_dict[f'Sensor_{l}']['start_pos'] = self.sensor_starts_dy[i]
 
         split_colons = data['Processed_Time'].str.split(':', expand=True)
         if split_colons.shape[1] != 3:
@@ -209,8 +236,8 @@ class HiSTIFFSData:
                            + ss*np.timedelta64(1, 's') + us*np.timedelta64(1, 'us'))
         self.data_dict['Processed Time'] = processed_time.to_numpy(dtype='timedelta64[us]')
 
-
     def describe_channels(self, time_cutoff=1.0):
+        print(f'Gathering raw data descriptors over first {time_cutoff} second(s)...')
         for l in self.sensor_labels:
             s = self.data_dict[f'Sensor_{l}']
             t_min = np.min(s['time'])
@@ -229,13 +256,14 @@ class HiSTIFFSData:
         if window is None:
             window = self.filter_window
         
+        print(f'Filtering raw data with window size {window}...')
         for l in self.sensor_labels:
             s = self.data_dict[f'Sensor_{l}']
             self.data_dict[f'Sensor_{l}']['strain_1_filter'] = savgol_filter(s['strain_1_raw'], window, order)
             self.data_dict[f'Sensor_{l}']['strain_2_filter'] = savgol_filter(s['strain_2_raw'], window, order)
 
-
-    def calc_force_position(self, filter_out=False):
+    def calc_force_position(self, filter_out=False, clip=True):
+        print('Calculating force and position from raw data...')
         for l in self.sensor_labels:
             try:
                 s = self.data_dict[f'Sensor_{l}']
@@ -261,17 +289,299 @@ class HiSTIFFSData:
 
                 num = k2*d2*(s['strain_1_filter'] - c1) - k1*d1*(s['strain_2_filter'] - c2)
                 den = k2*(s['strain_1_filter'] - c1) - k1*(s['strain_2_filter'] - c2)                
+                for i, val in enumerate(den):
+                    if val >= 1e-6 and val <= 1e16:
+                        den[i] = val
+                    else:
+                        den[i] = 1.0
                 s['position'] = np.clip(np.where(np.abs(den) > 1e9, num/den, 0.0), 0.03, 0.15) # sanity check in centimeters  
 
                 if filter_out:
                     s['force'] =    savgol_filter(s['force'],    self.filter_window, 1)
                     s['position'] = savgol_filter(s['position'], self.filter_window, 1)
+
+                if clip:    # set all non-sensical fp data points to 0
+                    mask = (s['position'] >= self.min_pos) & (s['position'] <= s['length'])
+                    s['force'] = np.where(mask, s['force'], 0.0)
+                    s['position'] = np.where(mask, s['position'], 0.0)
             
             except Exception as e:
                 print(f"Missing data for Sensor {l}. Cannot calculate force/position. Error: {e}")
                 continue
 
+        print('Calculate force and position complete.\n')
         self.has_force_pos = True
+
+    # === gather and clean stalk data ===
+    def _cleanup_sensor_traces(self, num_iters=3):
+        print('Cleaning sensor traces before stalk association...')
+
+        self.clean_dict = copy.deepcopy(self.data_dict)
+
+        # for l in self.sensor_labels:
+        #     s = self.clean_dict[f'Sensor_{l}']
+        #     mask = (s['position'] >= self.min_pos + 0.005*0)
+        #     # s['time'] = np.where(mask, s['time'], 0.0)
+        #     s['force'] = np.where(mask, s['force'], 0.0)
+        #     s['position'] = np.where(mask, s['position'], 0.0)
+
+        print(f'\tEnforcing decreasing sensor position with {num_iters} passes')
+        for _ in range(num_iters):
+            for l in self.sensor_labels:
+                s = self.clean_dict[f'Sensor_{l}']
+                diffs = np.diff(s['position'], append=0.0)
+                mask = (diffs <= 0.0001) # allow 1mm slide back between data points
+                # s['time'] = np.where(mask, s['time'], 0.0)
+                s['force'] = np.where(mask, s['force'], 0.0)
+                s['position'] = np.where(mask, s['position'], 0.0)
+    
+        print(f'\tEnforcing {self.fp_thresh} "force x position" step size with {num_iters} passes')
+        for _ in range(num_iters):
+            for l in self.sensor_labels:
+                s = self.clean_dict[f'Sensor_{l}']
+                mask = self._get_sensor_fp_mask(s, self.fp_thresh)
+                # s['time'] = np.where(mask, s['time'], 0.0)
+                s['force'] = np.where(mask, s['force'], 0.0)
+                s['position'] = np.where(mask, s['position'], 0.0)
+
+
+        for l in self.sensor_labels:
+            s = self.clean_dict[f'Sensor_{l}']
+            mask_nz = s['position'] > 0.0
+            f_nz = s['force'][mask_nz]
+            p_nz = s['position'][mask_nz]
+ 
+            std_fnz = np.std(f_nz)
+            if std_fnz >= 2.0:
+                mask_remove_floor = s['force'] >= 2.0 
+                s['force'] = np.where(mask_remove_floor, s['force'], 0.0)
+                s['position'] = np.where(mask_remove_floor, s['position'], 0.0)
+
+            # plt.figure()
+            # plt.title(f'{np.std(f_nz)}')
+            # plt.hist(f_nz, bins=30)
+
+    def _get_sensor_fp_mask(self, sensor, fp_thresh=None):
+        if fp_thresh is None:
+            fp_thresh = self.fp_thresh
+
+        points = np.column_stack((sensor['force'], sensor['position']))
+        diffs = points[1:] - points[:-1]
+        fp_gap = np.linalg.norm(diffs, axis=1)
+        fp_gap = np.append(fp_gap, 0)
+
+        return (fp_gap <= fp_thresh)
+
+    def _find_segments(self, sensor, time_gap: float=0.2):
+        """
+        Identifies start and end indices of active runs (segments) based solely on time differences.
+        
+        A run is closed whenever a value in the 'diffs' array exceeds 0.2.
+        This is the simplified implementation requested.
+        
+        Parameters:
+        - sensor: dict containing 'position' and 'time' arrays.
+        - time_gap: float of seconds between end of one segment and start of another.
+        
+        Returns:
+        - List of tuples: Each tuple is (start_index, end_index) for a run.
+        - Number of segments found.
+        """
+        s = sensor
+        segments = []
+        if len(s['position']) < 2:
+            return segments, 0
+
+        # Identify indices where the sensor is active (position > 0)
+        active_idx = np.where(s['position'] > 0.0)[0]
+        if len(active_idx) == 0:
+            return segments, 0
+
+        # Compute the 'diffs' array (time differences between consecutive active points)
+        active_time = s['time'][active_idx]
+        diffs = np.diff(active_time)
+
+        # Keep the original debug visualizations of the diffs array
+        # plt.figure()
+        # plt.hist(active_time, bins=100)
+        # plt.figure()
+        # plt.scatter(active_time[:-1], diffs)  # diffs has length len(active_time) - 1
+
+        # Group into runs using only the diffs array
+        start = active_idx[0]
+        end = active_idx[0]
+
+        for i in range(len(diffs)):
+            if diffs[i] > time_gap:
+                # Close the current run
+                segments.append((start, end))
+                # Start a new run
+                start = active_idx[i + 1]
+                end = active_idx[i + 1]
+            else:
+                # Continue the current run
+                end = active_idx[i + 1]
+
+        # Add the final run
+        segments.append((start, end))
+
+        # plt.scatter(range(len(binary)), binary, s=0.5)
+        # for run in segments:
+        #     plt.axvline(run[0], c='green')
+        #     plt.axvline(run[1], c='red')
+        # plt.show()
+        print(len(segments))
+
+        return segments, len(segments)
+
+    def _associate_segments(self):
+        # get probe velocity from sensor position data
+        velocities_y = []
+        for l in self.sensor_labels:
+            if l in ['B', 'C', 'D']: continue
+            s = copy.deepcopy(self.clean_dict[f'Sensor_{l}'])
+            for start, end in s['segments_idx']:
+                time = s['time'][start:end]
+                pos = s['position'][start:end]
+
+
+
+                dpos_dt, _ = np.polyfit(time, pos, deg=1)
+                print(dpos_dt)
+                
+                if s['type'] == 'straight': vel_y = -dpos_dt
+                elif s['type'] == 'angled': vel_y = -dpos_dt *np.cos(s['abs(yaw)_rad'])
+                else: raise ValueError(f'Sensor type in probe not available for Sensor_{l}. "straight" or "angled"')
+                velocities_y.append(vel_y)
+
+        self.avg_probe_vel = 0.12# np.median(velocities_y)
+        self.nominal_stalk_gap = self.stalk_spacing / self.avg_probe_vel 
+        # plt.figure()
+        # plt.hist(velocities_y, bins=50)
+        # plt.axvline(self.avg_probe_vel, c='red')
+        print(self.avg_probe_vel)
+        # plt.show()
+
+        # compute time offsets to align each sensor
+        for i, l in enumerate(self.sensor_labels):
+            s = self.clean_dict[f'Sensor_{l}']
+            start_pos = self.sensor_starts_dy[i]
+            s['time_offset'] = s['start_pos'] / self.avg_probe_vel
+
+            print(i, l, s['start_pos'], s['time_offset'])
+
+        # self.plot_force_position(filter_level='clean', offset_time=True)
+
+        # associate stalks across sensors
+        s_top = self.clean_dict['Sensor_A']
+        self.stalk_sensor_starts = []
+        self.stalk_sensor_ends = []
+        for start_top, end_top in s_top['segments_idx']:
+            ref_time = s_top['time'][start_top] - s_top['time_offset']
+            sensor_starts = {'A': start_top, 'B': 0, 'C': 0, 'D': 0, 'E': 0}
+            sensor_ends = {'A': end_top, 'B': 0, 'C': 0, 'D': 0, 'E': 0}
+            for l in self.sensor_labels:
+                if l == 'A': continue
+                s_test = self.clean_dict[f'Sensor_{l}']
+                for start_test, end_test in s_test['segments_idx']:
+                    if abs(ref_time - (s_test['time'][start_test] - s_test['time_offset'])) <= self.nominal_stalk_gap/2.5:
+                        sensor_starts[f'{l}'] = start_test
+                        sensor_ends[f'{l}'] = end_test
+                        break
+            self.stalk_sensor_starts.append(sensor_starts)
+            self.stalk_sensor_ends.append(sensor_ends)
+
+        # print(self.stalk_sensor_starts)
+        # print(len(self.stalk_sensor_starts))
+
+    def _save_stalk_association(self):
+        # Write stalks data to new CSV of same time in name
+        with open(self.stalks_csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([Config.STALK_TIMES_MARKER])
+
+            # Wide-format header (one column pair per sensor, always in A-B-C-... order)
+            header = ['Stalk']
+            for l in self.sensor_labels:          # ordered_sensors from enclosing scope
+                header.extend([f'{l}_Start', f'{l}_End'])
+            writer.writerow(header)
+
+            # One row per stalk, all sensors present as columns
+            for i, (sensor_starts, sensor_ends) in enumerate(zip(self.stalk_sensor_starts, self.stalk_sensor_ends)):
+                row = [i]
+                for l in self.sensor_labels:
+                    s = self.data_dict[f'Sensor_{l}']
+                    if sensor_starts[l] != 0 and sensor_ends[l] != 0:
+                        start, end = s['time'][sensor_starts[l]] - self.nominal_stalk_gap/4, s['time'][sensor_ends[l]] + self.nominal_stalk_gap/4
+                        row.extend([f"{start:.3f}", f"{end:.3f}"])
+                    else:
+                        row.extend(['', ''])       # missing sensor for this stalk
+                writer.writerow(row)
+
+        print(f"Status: All stalk spans saved to {self.stalks_csv_path} (wide format)")
+
+
+
+    def detect_stalks(self, time_gap=0.2, min_seg=25, plot=False):
+        if not self.exists:
+            print("Status: No data loaded - call HiSTIFFSData(...) first")
+            return
+
+        if not self.has_force_pos:
+            self.calc_force_position()
+
+        self._cleanup_sensor_traces()
+        # self.plot_force_position(filter_level='valid')
+        # self.plot_force_position(filter_level='clean')
+        
+
+        print(f'\tBreaking sensor traces into segments with time gap {time_gap}s and min size {min_seg} points')
+        for l in self.sensor_labels:
+            s = self.clean_dict[f'Sensor_{l}']
+            sc = copy.deepcopy(self.clean_dict[f'Sensor_{l}'])
+            s['segments_idx'], s['num_stalks'] = self._find_segments(sc, time_gap)
+
+        self._associate_segments()
+        self._save_stalk_association()
+
+
+        if plot:
+            n_rows = len(self.sensor_labels)
+            fig, axs = plt.subplots(n_rows, 2, figsize=(12, 1.5 * n_rows),
+                                    sharex=True, squeeze=False)
+            fig.suptitle("Stalk Detection", fontsize=12)
+
+            # Plot lines (stored for live xdata updates on shift)
+            lines = {}
+            for i, l in enumerate(self.sensor_labels):
+                s = self.data_dict[f'Sensor_{l}']
+                sc = self.clean_dict[f'Sensor_{l}']
+
+                # Force (left column) – selection target
+                line_f = axs[i, 0].scatter(sc['time']- sc['time_offset'], sc['force'], color=self.colors[i % len(self.colors)],
+                                        s=1, label=f'{l} Force (N)')
+                axs[i, 0].set_ylabel(f'{l} Force (N)')
+                # axs[i, 0].legend(loc='upper right')
+                axs[i, 0].grid(True, alpha=0.3)
+
+                # Position (right column)
+                line_p = axs[i, 1].scatter(sc['time'] - sc['time_offset'], sc['position'] * 1000, color=self.colors[i % len(self.colors)],
+                                        s=1, label=f'{l} Position (mm)')
+                for idxs in sc['segments_idx']:
+                    axs[i, 1].axvline(sc['time'][idxs[0]]- sc['time_offset'], c='green', linewidth=1)
+                    axs[i, 1].axvline(sc['time'][idxs[1]]- sc['time_offset'], c='red', linewidth=1)
+                axs[i, 1].set_ylabel(f'{l} Position (mm)')
+                # axs[i, 1].legend(loc='upper right')
+                axs[i, 1].grid(True, alpha=0.3)
+
+                lines[(l, 'force')] = line_f
+                lines[(l, 'pos')] = line_p
+
+            # Bottom row gets x-labels
+            axs[-1, 0].set_xlabel('Time (s)')
+            axs[-1, 1].set_xlabel('Time (s)')
+
+            fig.tight_layout(rect=[0, 0.04, 1, 0.96])  # leave bottom space for controls
 
     def interactive_detect_stalks(self):
         '''
@@ -299,7 +609,7 @@ class HiSTIFFSData:
             return
 
         # ── Figure with exact same structure as plot_force_position combined=True ──
-        fig, axs = plt.subplots(n_rows, 2, figsize=(14, 3.5 * n_rows),
+        fig, axs = plt.subplots(n_rows, 2, figsize=(12, 1.5 * n_rows),
                                 sharex=True, squeeze=False)
         fig.suptitle("Interactive Stalk Detection", fontsize=12)
 
@@ -325,17 +635,17 @@ class HiSTIFFSData:
             position[mask] = 0.0
 
             # Force (left column) – selection target
-            line_f, = axs[i, 0].plot(s['time'], force, color=self.colors[i % len(self.colors)],
-                                     lw=1.4, label=f'{l} Force (N)')
-            # axs[i, 0].set_ylabel(f'{l} Force (N)')
-            axs[i, 0].legend(loc='upper right')
+            line_f = axs[i, 0].scatter(s['time'], force, color=self.colors[i % len(self.colors)],
+                                     s=1, label=f'{l} Force (N)')
+            axs[i, 0].set_ylabel(f'{l} Force (N)')
+            # axs[i, 0].legend(loc='upper right')
             axs[i, 0].grid(True, alpha=0.3)
 
             # Position (right column)
-            line_p, = axs[i, 1].plot(s['time'], position * 1000, color=self.colors[i % len(self.colors)],
-                                     lw=1.4, label=f'{l} Position (mm)')
-            # axs[i, 1].set_ylabel(f'{l} Position (mm)')
-            axs[i, 1].legend(loc='upper right')
+            line_p = axs[i, 1].scatter(s['time'], position * 1000, color=self.colors[i % len(self.colors)],
+                                     s=1, label=f'{l} Position (mm)')
+            axs[i, 1].set_ylabel(f'{l} Position (mm)')
+            # axs[i, 1].legend(loc='upper right')
             axs[i, 1].grid(True, alpha=0.3)
 
             lines[(l, 'force')] = line_f
@@ -428,9 +738,9 @@ class HiSTIFFSData:
                 return
 
             # Write stalks data to new CSV of same time in name
-            with open(self.stalks_csv_path, 'a', newline='') as f:
+            with open(self.stalks_csv_path, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow(['===BEGIN_STALKS==='])
+                writer.writerow([Config.STALK_TIMES_MARKER])
 
                 # Wide-format header (one column pair per sensor, always in A-B-C-... order)
                 header = ['Stalk']
@@ -450,7 +760,6 @@ class HiSTIFFSData:
                     writer.writerow(row)
 
             print(f"Status: All stalk spans saved to {self.stalks_csv_path} (wide format)")
-            print("       Later retrieval will be added to HiSTIFFSData.parse_metadata()")
             plt.close(fig)
         
         btn_prev.on_clicked(prev_stalk)
@@ -482,8 +791,213 @@ class HiSTIFFSData:
         fig.canvas.draw_idle()
         plt.show(block=True)
 
+    def gather_stalk_traces(self):
+        if not self.has_force_pos:
+            self.calc_force_position()
+        
+        print("Gathering data for detected stalks' traces across all sensors...")
+        path = self.stalks_csv_path
+        with open(path, 'r') as f:
+            csv_reader = csv.reader(f)
+            for i, row in enumerate(csv_reader):
+                if len(row) == 1 and row[0].strip() == Config.STALK_TIMES_MARKER:
+                    data_idx = i
+        df = pd.read_csv(path, skiprows=data_idx+1)
+        self.num_stalks = len(df)
 
-    def plot_force_position(self, sensors='A,B,C,D,E', combined=True, return_figs=False):
+        self.stalks_time = []
+        self.stalks_force = []
+        self.stalks_position = []
+        self.stalks_probe_position = [] 
+        for i in range(self.num_stalks):
+            stalk_time = {}
+            stalk_force = {}
+            stalk_position = {}
+            stalk_probe_position = {}
+            for j, l in enumerate(self.sensor_labels):
+                s = self.data_dict[f'Sensor_{l}']
+                mask = self._get_valid_mask(l, df.iloc[i])
+                stalk_time[l] = s['time'][mask]
+                stalk_force[l] = s['force'][mask]
+                stalk_position[l] = s['position'][mask]
+                stalk_probe_position[l] = (s['length'] - s['position'][mask]) + s['start_pos']
+
+            self.stalks_time.append(stalk_time)
+            self.stalks_force.append(stalk_force)
+            self.stalks_position.append(stalk_position)
+            self.stalks_probe_position.append(stalk_probe_position)
+
+    def _cleanup_stalk_traces(self, num_iters=5):
+        if not self.has_force_pos:
+            self.calc_force_position()
+        
+        if not hasattr(self, 'stalks_time'):
+            self.gather_stalk_traces()
+
+        print('Cleaning stalk traces...')
+        self.clean_stalks_time = copy.deepcopy(self.stalks_time)
+        self.clean_stalks_force = copy.deepcopy(self.stalks_force)
+        self.clean_stalks_position = copy.deepcopy(self.stalks_position)
+        self.clean_stalks_probe_position = copy.deepcopy(self.stalks_probe_position)
+
+        print(f'\tEnforcing increasing probe position with {num_iters*2} passes')
+        for i in range(self.num_stalks):
+            for _ in range(num_iters*2):
+                for l in self.sensor_labels:
+                    diffs = np.diff(self.clean_stalks_probe_position[i][l], append=0.0)
+                    mask = (diffs >= 0.0)
+                    self.clean_stalks_time[i][l] = self.clean_stalks_time[i][l][mask]
+                    self.clean_stalks_force[i][l] = self.clean_stalks_force[i][l][mask]
+                    self.clean_stalks_position[i][l] = self.clean_stalks_position[i][l][mask]
+                    self.clean_stalks_probe_position[i][l] = self.clean_stalks_probe_position[i][l][mask]
+
+        print(f'\tEnforcing {self.fp_thresh} "force x position" step size with {num_iters} passes')
+        for i in range(self.num_stalks):
+            for _ in range(num_iters):
+                for l in self.sensor_labels:
+                    if len(self.clean_stalks_time[i][l]) <= 10:
+                        continue
+                    mask = self._get_stalk_fp_mask(i, l, self.fp_thresh)
+                    self.clean_stalks_time[i][l] = self.clean_stalks_time[i][l][mask]
+                    self.clean_stalks_force[i][l] = self.clean_stalks_force[i][l][mask]
+                    self.clean_stalks_position[i][l] = self.clean_stalks_position[i][l][mask]
+                    self.clean_stalks_probe_position[i][l] = self.clean_stalks_probe_position[i][l][mask]
+
+    def _get_valid_mask(self, sensor_label, time_bounds):
+        l = sensor_label
+        s = self.data_dict[f'Sensor_{l}']
+        return (s['time'] > time_bounds[f'{l}_Start']) & \
+               (s['time'] <= time_bounds[f'{l}_End']) & \
+               (s['position'] >= self.min_pos) & (s['position'] <= s['length'])
+
+    def _get_stalk_fp_mask(self, stalk_idx, sensor_label, fp_thresh=None):
+        if fp_thresh is None:
+            fp_thresh = self.fp_thresh
+        
+        if not hasattr(self, 'clean_stalks_time'):  # this catch is currently cicular. Won't work if triggered
+            print('dang')
+            self.gather_stalk_traces()
+        
+        # calculate the 2D force x position distance between neighboring points
+        points = np.column_stack((self.clean_stalks_force[stalk_idx][sensor_label], 
+                                  self.clean_stalks_position[stalk_idx][sensor_label]))
+        differences = points[1:] - points[:-1]
+        fp_gap = np.linalg.norm(differences, axis=1)
+        fp_gap = np.append(fp_gap, 0)
+
+        return (fp_gap <= fp_thresh)
+
+    # === estimate stalk stiffness ===
+    def estimate_all_stalks_stiffness(self, method='quasi-static average'):
+        self.method = method
+        if not hasattr(self, 'clean_stalks_time'):
+            self._cleanup_stalk_traces()
+
+        print(f'\nEstimating stiffness of {self.num_stalks} stalks with "{method}" method...')
+        self.stiffnesses = np.empty(self.num_stalks, dtype=np.float64)
+        self.estimates = []
+        zipped = zip(self.clean_stalks_time, self.clean_stalks_force,
+                         self.clean_stalks_position, self.clean_stalks_probe_position)
+    
+        parallel_deflection = self.data_dict[f'Sensor_C']['parallel_deflection']
+        yaw_B = self.data_dict[f'Sensor_B']['abs(yaw)_rad']
+        yaw_D = self.data_dict[f'Sensor_D']['abs(yaw)_rad']
+        beam_constant = self.height**3 / 3
+        for i, stalk_trace_data in enumerate(zipped):
+            print(f'Processing stalk {i+1}')
+            sensor_readings = {}
+            for l in self.sensor_labels:
+                sensor_readings[l] = self.read_stalk_on_sensor(stalk_trace_data, l)
+            estimate_1 = (sensor_readings['C'] - sensor_readings['A']) / parallel_deflection
+            estimate_2 = (sensor_readings['C'] - sensor_readings['E']) / parallel_deflection
+            estimate_3 = sensor_readings['B'] / np.sin(yaw_B) * np.cos(np.radians(38))
+            estimate_4 = sensor_readings['D'] / np.sin(yaw_D)
+
+            estimates_raw = np.array([estimate_1, estimate_2, estimate_3, estimate_4]) * beam_constant
+            # print(estimates_raw)
+            estimates_filt = []
+            for estimate in estimates_raw:
+                if np.isnan(estimate):
+                    continue
+                estimates_filt.append(estimate)
+            
+            self.estimates.append(estimates_raw)
+            self.stiffnesses[i] = np.average(estimates_filt)
+
+        self.estimates = np.array(self.estimates)
+        self.stiffnesses = np.array(self.stiffnesses)
+
+    def read_stalk_on_sensor(self, stalk_trace_data, sensor_label):
+        time, force, position, probe_position = stalk_trace_data
+        l = sensor_label
+        sensor_type = self.data_dict[f'Sensor_{l}']['type']
+
+        if not np.any(force[l]):
+            return np.nan
+        
+        if sensor_type == 'straight':
+            mean = np.average(force[l])
+            reading = mean
+        elif sensor_type == 'angled':
+            slope, y_intercept = np.polyfit(probe_position[l], force[l], deg=1)
+            reading = abs(slope)
+
+        return reading
+
+    # === display data and output results ===
+    def plot_detections(self, filter_level='valid'):
+        if not self.has_force_pos:
+            self.calc_force_position()
+        
+        if not hasattr(self, 'all_stalks_time'):
+            self.gather_stalk_traces()
+
+        if not hasattr(self, 'clean_stalks_time'):
+            self._cleanup_stalk_traces()
+
+        if filter_level == 'valid':
+            zipped = zip(self.stalks_time, self.stalks_force,
+                         self.stalks_position, self.stalks_probe_position)
+        elif filter_level == 'clean':
+            zipped = zip(self.clean_stalks_time, self.clean_stalks_force,
+                         self.clean_stalks_position, self.clean_stalks_probe_position)
+        else:
+            raise ValueError('Invalid filter level. Only "valid" or "clean"')
+        
+        print(f'\nPlotting {self.num_stalks} stalk detections with {filter_level} filter...')
+        count = 0
+        for time, force, position, probe_position in zipped:
+            # if count > 2:
+            #     break
+            count += 1
+            fig = plt.figure(figsize=(8, 5))
+            gs = gridspec.GridSpec(2, 2)
+            ax1 = fig.add_subplot(gs[0, 0])
+            ax2 = fig.add_subplot(gs[0, 1])
+            ax3 = fig.add_subplot(gs[1, :])
+            for start, c in zip(self.sensor_starts_dy, self.colors):
+                ax3.axvline(start, c=c, linewidth=0.5)
+
+            for l, c in zip(self.sensor_labels, self.colors):
+                ax1.scatter(time[l], force[l], s=1, c=c)
+                ax2.scatter(time[l], position[l], s=1, c=c)
+                ax3.scatter(probe_position[l], force[l], s=1, c=time[l], cmap='viridis')
+
+            ax1.set_ylim(0, 20)
+            ax1.set_ylabel('Force (N)')
+            ax1.set_xlabel('Time (s)')
+            
+            ax2.set_ylim(0, 0.15)
+            ax2.set_ylabel('Sensor Position (m)')
+            ax2.set_xlabel('Time (s)')
+            
+            ax3.set_ylim(0, 20)
+            ax3.set_ylabel('Force (N)')
+            ax3.set_xlabel('Probe Position (m)')
+
+            fig.tight_layout()
+  
+    def plot_force_position(self, sensors='A,C,D,E', combined=True, return_figs=False, filter_level='valid', offset_time: bool=False):
         sensors_to_plot = [label.strip() for label in sensors.split(',')]
 
         # Filter out invalid sensor labels (always safe on Windows, Ubuntu, and RPi 5)
@@ -515,26 +1029,34 @@ class HiSTIFFSData:
                                     figsize=(14, 3.5 * n_rows),   # scales nicely with row count
                                     squeeze=False)                # always 2D array for easy indexing
 
-            fig.suptitle(f"Calculated Force & Position – Sensors {', '.join(ordered_sensors)}\n"
+            fig.suptitle(f"Calculated Force & Position - Sensors {', '.join(ordered_sensors)}\n"
                          f"Test: {self.test_type}", fontsize=12)
 
             for i, l in enumerate(ordered_sensors):
-                s = self.data_dict[f'Sensor_{l}']
+                if filter_level == 'valid': s = self.data_dict[f'Sensor_{l}']
+                elif filter_level == 'clean': s = self.clean_dict[f'Sensor_{l}']
+                if offset_time: 
+                    t0 = s['time_offset'] 
+                else: 
+                    t0 = 0.0
                 c = self.colors[i]
+                
                 if 'force' not in s or 'position' not in s:
                     self.calc_force_position()   # computes for ALL sensors (idempotent)
+                
 
                 # Left column: Force
-                axs[i, 0].plot(s['time'], s['force'], c=c, linewidth=1.4, label=f'{l} Force')
+                axs[i, 0].scatter(s['time']-t0, s['force'], c=c, s=1, linewidth=1.4, label=f'{l} Force')
                 axs[i, 0].set_ylabel(f'{l} Force (N)')
-                axs[i, 0].legend(loc='upper right')
+                # axs[i, 0].legend(loc='upper right')
                 axs[i, 0].grid(True, alpha=0.3)
 
                 # Right column: Position (converted to mm for readability)
-                axs[i, 1].plot(s['time'], s['position'] * 1000, c=c, linewidth=1.4, label=f'{l} Position')
+                axs[i, 1].scatter(s['time']-t0, s['position'] * 1000, c=c, s=1, linewidth=1.4, label=f'{l} Position')
                 axs[i, 1].set_ylabel(f'{l} Position (mm)')
-                axs[i, 1].legend(loc='upper right')
+                # axs[i, 1].legend(loc='upper right')
                 axs[i, 1].grid(True, alpha=0.3)
+                axs[i, 1].set_ylim(0, 120)
 
             all_forces = np.concatenate(
                 [self.data_dict[f'Sensor_{l}']['force'] for l in ordered_sensors]
@@ -553,7 +1075,7 @@ class HiSTIFFSData:
                 p_min, p_max = np.min(all_pos_mm), np.max(all_pos_mm)
                 pad_p = 0.05 * (p_max - p_min) if (p_max > p_min) else 10.0
                 for r in range(n_rows):
-                    axs[r, 1].set_ylim(p_min - pad_p, p_max + pad_p)
+                    axs[r, 1].set_ylim(0, p_max + pad_p)
 
             # ── Link y-limits so zooming/panning on ANY force subplot instantly updates ALL
             #     other force subplots (and same for position column). X-zoom already syncs
@@ -615,7 +1137,7 @@ class HiSTIFFSData:
             return figs
         else:
             for fig in figs:
-                plt.show()
+                plt.show(block=False)
             return None
 
     def plot_raw_strains(self, sensors='A,B,C,D,E', combined=True, return_figs=False):
@@ -742,15 +1264,48 @@ class HiSTIFFSData:
                 plt.show()
             return None
 
+    def save_stiffnesses(self, directory=None, note=None):
+        if directory is None:
+            directory = Config.RESULTS_BASE
+
+        folder = directory / self.date 
+        path = folder / f'{self.time}_stiffnesses.csv'
+        os.makedirs(folder, exist_ok=True)
+
+        header = ['Stalk', 'Stiffness (N/m^2)', 'Estimate 1', 'Estimate 2', 'Estimate 3', 'Estimate 4']
+        
+        with open(path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            if note:
+                writer.writerow(['Note: ' + note])
+            writer.writerow(['Estimation Method: ' + self.method])
+            writer.writerow(['Test Type: ' + self.test_type])
+            writer.writerow([Config.STIFFNESSES_MARKER])
+            writer.writerow(header)
+
+            for i in range(self.num_stalks):
+                row = [i+1, self.stiffnesses[i], self.estimates[i][0], self.estimates[i][1], self.estimates[i][2], self.estimates[i][3]]
+                writer.writerow(row)
+
+        print(f'Wrote stiffness results to {path}')
 
 if __name__ == "__main__":
-    data = HiSTIFFSData(date="2026-03-01", time="140040", debug=True)
+    times = ['203337', '203450', '203555', '203701', '203807', '203911', '204131', '204238', '204347', '204451', '204558', '204634', '204711', '204747', '204826', '204904', '204941', '205021', '205101', '205140']
+    data = HiSTIFFSData(date="2026-04-08", time=times[9], debug=True)
     if data.exists:
         # data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
-        data.calc_force_position(filter_out=False)
+        # data.calc_force_position(clip=False)
         # data.plot_force_position(combined=True)
         # plt.show()
 
-        data.interactive_detect_stalks()
+        # data.interactive_detect_stalks()
+        data.detect_stalks(plot=True)
+        
+        data.plot_detections(filter_level='clean')
+        data.estimate_all_stalks_stiffness()
+        data.save_stiffnesses(note='Validation w/DARLING. 25ft/min')
+
+        plt.show()
+        # keyboard.wait('space')

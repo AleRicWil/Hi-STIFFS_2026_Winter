@@ -323,9 +323,10 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.sensor_labels = sensor_labels
         self.ReadWrite = readwrite
         self.ReadWrite.data_ready.connect(self.handle_data)
-        self.ReadWrite.status_signal.connect(print)  # Print status to console
+        self.ReadWrite.status_signal.connect(print)
         self.ReadWrite.rate_updated.connect(lambda rate: self.rate_label.setText(f"Input Rate: {rate:.1f} Hz"))
 
+        # Calibration coefficients
         cal = self.ReadWrite.calibrations
         self.k1 = [cal[l]['k1'] for l in sensor_labels]
         self.d1 = [cal[l]['d1'] for l in sensor_labels]
@@ -334,106 +335,117 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.d2 = [cal[l]['d2'] for l in sensor_labels]
         self.c2 = [cal[l]['c2'] for l in sensor_labels]
 
-        self.calibration_active = [True] * self.num_sensors  # Per-sensor flag (in case some sensors start later)
+        self.calibration_active = [True] * self.num_sensors
         self.cal_start_time = [None] * self.num_sensors
         self.initial_strains1 = [[] for _ in range(self.num_sensors)]
         self.initial_strains2 = [[] for _ in range(self.num_sensors)]
-        self.cal_duration = 1.0  # Seconds for initial calibration period
-        self.min_samples = 150  # Minimum samples per sensor to compute reliable average
+        self.cal_duration = 1.0
+        self.min_samples = 150
 
-        # Performance optimizations for high refresh rates - pyqtgraph config is cross-platform via PyQt5
         pg.setConfigOptions(useOpenGL=True, antialias=False)
 
-        # Strain plot setup, now directly in this QMainWindow as central widget
-        print(f"\tBuilding plot windows...")
-        print(f"\t\tCreating strain plots...")
-        self.setWindowTitle("Strain Data Plots")  # Set title on self (the main window)
+        # === Main Window: Force and Position Plots (now central widget) ===
+        self.setWindowTitle("Force and Position - Real-Time Monitoring")
+        
+        self.win_force_pos = pg.GraphicsLayoutWidget()
+        self.plot_force = self.win_force_pos.addPlot(title='Force')
+        self.plot_force.setLabel('left', '', units='N')
+        self.plot_force.addLegend()
+        
+        self.plot_pos = self.win_force_pos.addPlot(title='Position')
+        self.plot_pos.setLabel('left', '', units='mm')
+        self.plot_pos.addLegend()
+
+        colors = ['r', 'g', 'c', 'y', 'm'][:self.num_sensors]
+        
+        self.curves_force = []
+        self.curves_pos = []
+        for i, s in enumerate(self.sensor_labels):
+            self.curves_force.append(self.plot_force.plot(pen=colors[i], name=f'{s}'))
+            self.curves_pos.append(self.plot_pos.plot(pen=colors[i], name=f'{s}'))
+
+        # Main layout with control bar
+        main_layout = QtWidgets.QVBoxLayout()
+        main_layout.addWidget(self.win_force_pos)
+
+        preset_layout = QtWidgets.QHBoxLayout()
+        preset_label = QtWidgets.QLabel("Time Range (s):")
+        preset_layout.addWidget(preset_label)
+        
+        presets = [1, 3, 5, 10, 15, 30]
+        for preset in presets:
+            btn = QtWidgets.QPushButton(str(preset))
+            btn.clicked.connect(lambda _, p=preset: self.set_time_range(p))
+            preset_layout.addWidget(btn)
+
+        # Rescale Y button (now on main window)
+        rescale_btn = QtWidgets.QPushButton("Rescale Y")
+        rescale_btn.clicked.connect(self.rescale_y_axes)
+        preset_layout.addWidget(rescale_btn)
+
+        preset_layout.addStretch()
+        self.rate_label = QtWidgets.QLabel("Input Rate: 0 Hz")
+        preset_layout.addWidget(self.rate_label)
+        
+        main_layout.addLayout(preset_layout)
+
+        central_widget = QtWidgets.QWidget()
+        central_widget.setLayout(main_layout)
+        self.setCentralWidget(central_widget)
+
+        self.resize(SCREEN_WIDTH, int(SCREEN_HEIGHT * 0.68))
+        self.move(0, 0)
+        self.show()
+
+        # === Secondary Window: Raw Strain Plots ===
+        print(f"\t\tCreating strain plots (secondary window)...")
         self.win_strain = pg.GraphicsLayoutWidget()
+        self.win_strain.setWindowTitle("Raw Strain Data (ADC Counts)")
+        
         self.plot_ch1 = self.win_strain.addPlot(title='Channel 1 Strains')
         self.plot_ch1.setLabel('left', '', units='ADC Counts')
         self.plot_ch1.addLegend()
+        
         self.plot_ch2 = self.win_strain.addPlot(title='Channel 2 Strains')
         self.plot_ch2.setLabel('left', '', units='ADC Counts')
         self.plot_ch2.addLegend()
 
-        colors = ['r', 'g', 'c', 'y', 'm'] [:self.num_sensors]
-        # → red, green, cyan, yellow, magenta
         self.curves_ch1 = []
         self.curves_ch2 = []
         for i, s in enumerate(self.sensor_labels):
             self.curves_ch1.append(self.plot_ch1.plot(pen=colors[i], name=f'{s}1'))
             self.curves_ch2.append(self.plot_ch2.plot(pen=colors[i], name=f'{s}2'))
 
-        layout = QtWidgets.QVBoxLayout()
-        layout.addWidget(self.win_strain)
+        self.win_strain.resize(SCREEN_WIDTH, int(SCREEN_HEIGHT * 0.32))
+        self.win_strain.move(0, int(SCREEN_HEIGHT * 0.69))
+        self.win_strain.show()
 
-        # Add preset buttons for display time range and rate label
-        print("\t\tConnecting plot window buttons...")
-        preset_layout = QtWidgets.QHBoxLayout()
-        preset_label = QtWidgets.QLabel("Time Range (s):")
-        preset_layout.addWidget(preset_label)
-        presets = [1, 3, 5, 10, 15, 30]
-        for preset in presets:
-            btn = QtWidgets.QPushButton(str(preset))
-            btn.clicked.connect(lambda _, p=preset: self.set_time_range(p))
-            preset_layout.addWidget(btn)
-        print("\t\tConnecting 'Input Rate' indicator...")
-        self.rate_label = QtWidgets.QLabel("Input Rate: 0 Hz")
-        preset_layout.addStretch()
-        preset_layout.addWidget(self.rate_label)
-        layout.addLayout(preset_layout)
+        # Support space key on secondary window
+        self.win_strain.installEventFilter(self)
 
-        # Set the layout on a central widget for this QMainWindow
-        central_widget = QtWidgets.QWidget()
-        central_widget.setLayout(layout)
-        self.setCentralWidget(central_widget)
-        self.resize(SCREEN_WIDTH, int(SCREEN_HEIGHT/2))
-        self.move(0, 0)
-        self.show()  # Show this main window
-
-        # Force and position plot window
-        print(f"\t\tCreating force/position plots...")
-        self.win_force_pos = pg.GraphicsLayoutWidget(title="Force and Position")
-        self.plot_force = self.win_force_pos.addPlot(title='Force')
-        self.plot_force.setLabel('left', '', units='N')
-        self.plot_force.addLegend()
-        self.plot_pos = self.win_force_pos.addPlot(title='Position')
-        self.plot_pos.setLabel('left', '', units='mm')
-        self.plot_pos.addLegend()
-
-        self.curves_force = []
-        self.curves_pos = []
-        for i, s in enumerate(self.sensor_labels):
-            self.curves_force.append(self.plot_force.plot(pen=colors[i], name=f'{s}'))
-            self.curves_pos.append(self.plot_pos.plot(pen=colors[i], name=f'{s}'))
-        self.win_force_pos.resize(SCREEN_WIDTH, int(SCREEN_HEIGHT/2))
-        self.win_force_pos.move(0, int(SCREEN_HEIGHT/2)+60)
-        self.win_force_pos.show()  # Show it here
-
-        # Install event filter on force/pos window to catch space presses there too
-        self.win_force_pos.installEventFilter(self)
-
-        self.display_time_range = 10.0  # Initial time range in seconds
-
-        # Deques for plotting data
-        maxlen = 30 * 300  # Sufficient for ~30s at 300 Hz
+        # Data buffers
+        maxlen = 15 * 300
         self.times = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
         self.strains1 = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
         self.strains2 = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
         self.forces = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
         self.positions = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
-        print(f"\t\tSet up deques for plot elements. Max size:{maxlen}")
 
-        # Set up timer for fixed-rate plot updates - QTimer is cross-platform for timed updates
-        print(f"\t\tStarting plot refresh timer...")
+        # Plot refresh timer
         self.plot_timer = QtCore.QTimer()
         self.plot_timer.timeout.connect(self.update_plots)
-        self.plot_timer.start(int(1000 / PLOT_REFRESH_HZ))  # Interval in ms
-        print(f"\tSuccessfully created plot windows.")
+        self.plot_timer.start(int(1000 / PLOT_REFRESH_HZ))
+
+        self.display_time_range = 10.0        
+        self.initial_rescale_done = False
+        self.display_start_time = 1.1   # first 1.1 s of data will never be plotted or used for y-scaling
+
+        print(f"\tSuccessfully created plot windows (Force/Position as main).")
 
     def handle_data(self, data_list):
-        """Handle emitted data: compute force/position, append to deques.
-        Now handles batched data (multiple packets flattened) and initial offset calibration."""
+        """Handle emitted data: compute force/position, append to deques only if t >= 1.1 s.
+        Early data (t < 1.1 s) is still processed for calibration but is never accumulated
+        for display or used in any y-scaling decisions."""
         if len(data_list) % (self.num_sensors * 3) != 0:
             print("Invalid batched data list length received for plotting.")
             return
@@ -450,19 +462,17 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
                 strain1 = strains1[i]
                 strain2 = strains2[i]
 
-                # Calibration logic: Collect initial data per sensor
+                # Calibration logic: Collect initial data per sensor (still runs on all incoming data)
                 if self.calibration_active[i]:
                     if self.cal_start_time[i] is None:
-                        self.cal_start_time[i] = time.time()  # Use system time for elapsed check
+                        self.cal_start_time[i] = time.time()
                         print(f"Starting calibration for sensor {self.sensor_labels[i]}")
 
-                    # Append to initial buffers
                     self.initial_strains1[i].append(strain1)
                     self.initial_strains2[i].append(strain2)
 
-                    # Check if calibration period is over 
                     elapsed = time.time() - self.cal_start_time[i]
-                    if elapsed >= self.cal_duration:  # Extra buffer
+                    if elapsed >= self.cal_duration:
                         if len(self.initial_strains1[i]) >= self.min_samples:
                             self.c1[i] = np.mean(self.initial_strains1[i])
                             self.c2[i] = np.mean(self.initial_strains2[i])
@@ -470,37 +480,42 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
                         else:
                             print(f"Warning: Insufficient samples ({len(self.initial_strains1[i])}) for sensor {self.sensor_labels[i]}. Using pre-loaded offsets.")
                         self.calibration_active[i] = False
-                        # Clear buffers to free memory
                         self.initial_strains1[i] = []
                         self.initial_strains2[i] = []
 
-                # Calculate force and position using (potentially updated) c values
+                # Calculate force and position (unchanged)
                 try:
                     num = (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
                     den = self.k1[i] * self.k2[i] * (self.d2[i] - self.d1[i])
                     force = num / den if abs(den) > 1e-6 else 0.0
-                    force = force if abs(force) <= 100.0 else 0.0  # Sanity check for force
+                    force = force if abs(force) <= 100.0 else 0.0
                 except:
                     force = 0.0
                 try:
                     num = (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
                     den = (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
-                    position = num / den if den != 0 and abs(den) > 1e9 else 0.0
-                    position = position if position <= 0.15 and position >= 0.03 else 0.0  # Sanity check for position (e.g., max 0.2m)
+                    position = num / den if den != 0 and abs(den) > 1e10 else 0.0
+                    position = position if position <= 0.15 and position >= 0.03 else 0.0
                 except:
                     position = 0.0
 
-                self.times[i].append(time_sec)
-                self.strains1[i].append(strain1)
-                self.strains2[i].append(strain2)
-                self.forces[i].append(force)
-                self.positions[i].append(position * 1000)  # to mm
+                # Only append to plotting deques after display_start_time
+                # (first 1.1 s is never displayed and never affects y-scaling)
+                if time_sec >= self.display_start_time:
+                    self.times[i].append(time_sec)
+                    self.strains1[i].append(strain1)
+                    self.strains2[i].append(strain2)
+                    self.forces[i].append(force)
+                    self.positions[i].append(position * 1000)
 
     def update_plots(self):
-        """Update all plot curves and ranges."""
+        """Update all plot curves and x-ranges. Performs the one-time automatic
+        y-rescale using data from t=1.1 s to t=2.1 s once t_max >= 2.1 s.
+        Thereafter, continuously auto-rescales all y-axes to fit the full
+        vertical range of the data currently visible in the x-window."""
         for i in range(self.num_sensors):
-            # if i in [0,1,3,4]:
-            #     continue
+            if i in [1]:
+                continue
             self.curves_ch1[i].setData(self.times[i], self.strains1[i])
             self.curves_ch2[i].setData(self.times[i], self.strains2[i])
             self.curves_force[i].setData(self.times[i], self.forces[i])
@@ -513,15 +528,65 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         x_min = max(0, t_max - self.display_time_range)
         x_max = t_max
 
-        self.plot_ch1.setXRange(x_min, x_max)
-        self.plot_ch2.setXRange(x_min, x_max)
-        self.plot_force.setXRange(x_min, x_max)
-        self.plot_pos.setXRange(x_min, x_max)
+        for plot in (self.plot_ch1, self.plot_ch2, self.plot_force, self.plot_pos):
+            if plot is not None:
+                plot.setXRange(x_min, x_max)
+
+        # Automatic one-time initial y-rescale on fixed early window
+        if not self.initial_rescale_done and t_max >= 2.1:
+            self._perform_initial_y_rescale()
+            self.initial_rescale_done = True
+        # Continuous auto-rescale y to fit currently visible data (after initial)
+        elif self.initial_rescale_done:
+            for plot in (self.plot_ch1, self.plot_ch2, self.plot_force, self.plot_pos):
+                if plot is not None:
+                    plot.getViewBox().setAutoVisible(y=True)
+                    plot.autoRange()
 
     def set_time_range(self, value):
         """Set the display time range based on button preset."""
         self.display_time_range = float(value)
         self.update_plots()
+
+    def rescale_y_axes(self):
+        """Rescale all y-axes to fit only the data currently being displayed in the visible time window."""
+        for plot in (self.plot_force, self.plot_pos, self.plot_ch1, self.plot_ch2):
+            if plot is not None:
+                plot.getViewBox().setAutoVisible(y=True)
+                plot.autoRange()
+
+    def _perform_initial_y_rescale(self):
+        """One-time automatic rescaling of all y-axes based solely on data in [1.1, 2.1] seconds."""
+        window_start = 1.1
+        window_end = 2.1
+
+        plot_ydata_pairs = [
+            (self.plot_force, self.forces),
+            (self.plot_pos, self.positions),
+            (self.plot_ch1, self.strains1),
+            (self.plot_ch2, self.strains2)
+        ]
+
+        for plot, y_data_lists in plot_ydata_pairs:
+            if plot is None:
+                continue
+
+            y_values_in_window = []
+            for i in range(self.num_sensors):
+                t_deque = self.times[i]
+                y_deque = y_data_lists[i]
+                for t_val, y_val in zip(t_deque, y_deque):
+                    if window_start <= t_val <= window_end:
+                        y_values_in_window.append(y_val)
+
+            if y_values_in_window:
+                y_min = min(y_values_in_window)
+                y_max = max(y_values_in_window)
+                span = y_max - y_min
+                padding = max(0.05 * span, abs(y_max) * 0.02) if span > 0 else 1.0
+                plot.setYRange(y_min - padding, y_max + padding)
+            else:
+                plot.autoRange()
 
     def eventFilter(self, obj, event):
         """Catch key events on filtered windows (e.g., force/pos)."""
@@ -536,14 +601,14 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
             self.stop_collection()
 
     def stop_collection(self):
-        """Stop data collection and clean up."""
+        """Stop data collection and clean up both windows."""
         print("Keyboard 'space' was pressed. Exiting datastream loop...")
-        self.close()  # Close strain window (self)
-        self.win_force_pos.close()  # Close force/pos window
-        print(f'Plots closed.')
+        self.close()                    # Close main window (Force/Position)
+        if hasattr(self, 'win_strain'):
+            self.win_strain.close()     # Close secondary strain window
+        print('Plots closed.')
         self.plot_timer.stop()
         self.ReadWrite.running = False
-        # self.ReadWrite.wait()  # Wait for thread to finish
 
 def run_collection(save_format='raw', plot=True, sensors='A', header_content=None, sensor_sns='001'):  # header_content now optional (GUI provides it)
     if sensors.isdigit():
@@ -589,8 +654,9 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: First data",
-        "Test Type: Demo",
+        "Note: For validation against DARLING. Hi-STIFFS v3.2",
+        "Test Type: Medium Lab w/o tops",
+        "Speed: 50 ft/min,Stalk Spacing: 6in,Probe Height (m): 0.785",
         f"Number of ICB-Sensors: 5, Sensor Label(s): {args.sensors}, Sensor SNs: 001 002 003 004 005",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_330SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"

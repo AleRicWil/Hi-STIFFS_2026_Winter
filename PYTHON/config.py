@@ -18,6 +18,8 @@ class Config:
 
     HEADER_MARKER = r'===END_METADATA==='
     DATA_MARKER = r'===BEGIN_DATA==='
+    STALK_TIMES_MARKER = r'===BEGIN_STALK_TIMES==='
+    STIFFNESSES_MARKER = r'===BEGIN_STIFFNESSES==='
 
     # Network / hardware constants (still cross-platform — pure Python)
     HOST_IP   = "192.168.137.1"      # change via GUI if needed

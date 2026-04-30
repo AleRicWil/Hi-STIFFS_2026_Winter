@@ -314,10 +314,8 @@ def zero_shift_correction(collection_path):
         raise ValueError("File must be a Calibration type collection.")
 
     # Parse sensor label and SN (always exactly one sensor for calibration)
-    sn = None
-    l = None
-    sn = '003'
-    l = 'C'
+    sn = data.sensor_sns[0]
+    l = data.sensor_labels[0]
     # for row in data.header_rows:
         # if row and 'Sensor Serial#' in row[0]:
         #     parts = row[0].split(',')
@@ -498,9 +496,9 @@ if __name__ == "__main__":
                  r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163945_01.csv']
     # generate_summary(old_paths)
 
-    # zero_shift_correction(r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-28\2026-02-28_202507_01.csv')
-    # summary_from_dwells(r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-28\2026-02-28_180222_01.csv')
-    calculate_coefficients(r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-28\calibration_003.csv')
+    # zero_shift_correction(r'Hi-STIFFS_2026_Winter\Raw Data\2026-03-13\2026-03-13_133242_01.csv')
+    # summary_from_dwells(r'Hi-STIFFS_2026_Winter\Raw Data\2026-03-13\2026-03-13_133242_01.csv')
+    calculate_coefficients(r'Hi-STIFFS_2026_Winter\Raw Data\2026-03-13\calibration_005.csv')
 
     
     
