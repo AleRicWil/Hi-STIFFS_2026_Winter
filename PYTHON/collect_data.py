@@ -8,6 +8,8 @@ import struct
 import argparse
 import queue  # For thread-safe queues
 import threading  # For separate processing thread
+import platform
+import os
 
 # Installed packages
 import numpy as np
@@ -321,6 +323,21 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         print(f"\n\tPlot windows status:")
         self.num_sensors = num_sensors
         self.sensor_labels = sensor_labels
+
+        # === Device-specific performance tuning (cross-platform) ===
+        self.is_pi5 = self._detect_raspberry_pi5()
+        if self.is_pi5:
+            self.plot_refresh_hz = 4.0          # smoother on Pi5 touchscreen
+            self.maxlen = 1000                  # smaller buffer = less memory/CPU
+            pg.setConfigOptions(useOpenGL=False)  # OpenGL is unreliable on Pi5 display stack
+            print("Detected Raspberry Pi 5 — using Pi5-optimized plot settings")
+        else:
+            self.plot_refresh_hz = PLOT_REFRESH_HZ
+            self.maxlen = 15 * 300 # 15s * 300sps
+            # OpenGL stays enabled (default behavior on Windows/Ubuntu)
+            print("Detected laptop/desktop — using full-performance plot settings")
+        # =============================================================
+
         self.ReadWrite = readwrite
         self.ReadWrite.data_ready.connect(self.handle_data)
         self.ReadWrite.status_signal.connect(print)
@@ -438,7 +455,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.win_strain.installEventFilter(self)
 
         # Data buffers
-        maxlen = 15 * 300
+        maxlen = self.maxlen
         self.times = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
         self.strains1 = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
         self.strains2 = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
@@ -448,7 +465,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         # Plot refresh timer
         self.plot_timer = QtCore.QTimer()
         self.plot_timer.timeout.connect(self.update_plots)
-        self.plot_timer.start(int(1000 / PLOT_REFRESH_HZ))
+        self.plot_timer.start(int(1000 / self.plot_refresh_hz))
 
         self.display_time_range = 10.0        
         self.initial_rescale_done = False
@@ -457,6 +474,26 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.display_start_time = 1.1   # first 1.1 s of data will never be plotted or used for y-scaling
 
         print(f"\tSuccessfully created plot windows (Force/Position as main).")
+
+    def _detect_raspberry_pi5(self):
+        """Pure-Python runtime detection. Returns True only on Raspberry Pi 5 (or any Pi).
+        On Windows 10/11 or Ubuntu it returns False instantly with zero overhead.
+        Cross-platform safe — uses standard library + optional /proc read."""
+        if platform.system() != "Linux":
+            return False
+        try:
+            # Most reliable method for Pi5 (works on all Pi models)
+            with open("/proc/device-tree/model", "r", encoding="ascii") as f:
+                print('Using RasPi5')
+                return "Raspberry Pi" in f.read()
+        except (OSError, FileNotFoundError):
+            # Fallback for older Pi or non-Pi Linux
+            try:
+                with open("/proc/cpuinfo", "r") as f:
+                    print('Using RasPi5')
+                    return "Raspberry Pi" in f.read()
+            except:
+                return False
 
     def handle_data(self, data_list):
         """Handle emitted data: compute force/position, append to deques only if t >= 1.1 s.
