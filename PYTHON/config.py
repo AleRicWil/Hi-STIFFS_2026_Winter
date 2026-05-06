@@ -23,7 +23,7 @@ class Config:
 
     # Network / hardware constants (still cross-platform — pure Python)
     HOST_IP   = "192.168.137.1"      # change via GUI if needed
-    HOST_PORT = 80
+    HOST_PORT = 8080
 
     @classmethod
     def set_base_dir(cls, new_path: str):
