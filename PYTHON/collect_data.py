@@ -452,6 +452,8 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
 
         self.display_time_range = 10.0        
         self.initial_rescale_done = False
+        self.last_y_rescale_time = 0.0          
+        self.rescale_interval = 1.0             
         self.display_start_time = 1.1   # first 1.1 s of data will never be plotted or used for y-scaling
 
         print(f"\tSuccessfully created plot windows (Force/Position as main).")
@@ -550,12 +552,15 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         if not self.initial_rescale_done and t_max >= 2.1:
             self._perform_initial_y_rescale()
             self.initial_rescale_done = True
+            self.last_y_rescale_time = time.time()  # start the throttle clock
         # Continuous auto-rescale y to fit currently visible data (after initial)
         elif self.initial_rescale_done:
-            for plot in (self.plot_ch1, self.plot_ch2, self.plot_force, self.plot_pos):
-                if plot is not None:
-                    plot.getViewBox().setAutoVisible(y=True)
-                    plot.autoRange()
+            now = time.time()
+            if now - self.last_y_rescale_time >= self.rescale_interval:
+                for plot in (self.plot_force, self.plot_pos, self.plot_ch1, self.plot_ch2):
+                    if plot is not None:
+                        plot.enableAutoRange(x=False, y=True)
+                self.last_y_rescale_time = now
 
     def set_time_range(self, value):
         """Set the display time range based on button preset."""
