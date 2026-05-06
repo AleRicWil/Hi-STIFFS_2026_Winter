@@ -21,7 +21,7 @@ from process import HiSTIFFSData
 from config import Config
 import collect_data as cd  # Import at top for cross-platform module access via PyQt5/Python
 
-RAW_DATA_BASE = Config.RESULTS_BASE
+RAW_DATA_BASE = Config.RAW_DATA_BASE
 SETTINGS_FILE = 'Cross-Platform_GUI_Settings.json'  # File for storing user preferences, cross-platform compatible via JSON.
 
 class SettingsDialog(QDialog):

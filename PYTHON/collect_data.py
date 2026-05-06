@@ -26,7 +26,7 @@ VREF = 5.1  # External reference voltage (AVDD)
 VOLTS_PER_LSB = VREF / (ADS1220_PGA_GAIN * TWO_TO_23)
 
 # === Plotting parameters ===
-PLOT_REFRESH_HZ = 6  # Refresh rate for plot updates in Hz
+PLOT_REFRESH_HZ = 30  # Refresh rate for plot updates in Hz
 PROCESS_FPS = 30  # Set desired FPS for processing/dequeuing (e.g., 30 for smooth plotting)
 SCREEN_SCALE = 1.3
 SCREEN_WIDTH = int(1920*SCREEN_SCALE)
@@ -361,8 +361,15 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.curves_force = []
         self.curves_pos = []
         for i, s in enumerate(self.sensor_labels):
-            self.curves_force.append(self.plot_force.plot(pen=colors[i], name=f'{s}'))
-            self.curves_pos.append(self.plot_pos.plot(pen=colors[i], name=f'{s}'))
+            curve = self.plot_force.plot(pen=colors[i], name=f'{s}')
+            curve.setDownsampling(method='peak', auto=True)   
+            curve.setClipToView(True)                       
+            self.curves_force.append(curve)
+
+            curve = self.plot_pos.plot(pen=colors[i], name=f'{s}')
+            curve.setDownsampling(method='peak', auto=True)   
+            curve.setClipToView(True)                       
+            self.curves_pos.append(curve)
 
         # Main layout with control bar
         main_layout = QtWidgets.QVBoxLayout()
@@ -413,8 +420,15 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.curves_ch1 = []
         self.curves_ch2 = []
         for i, s in enumerate(self.sensor_labels):
-            self.curves_ch1.append(self.plot_ch1.plot(pen=colors[i], name=f'{s}1'))
-            self.curves_ch2.append(self.plot_ch2.plot(pen=colors[i], name=f'{s}2'))
+            curve = self.plot_ch1.plot(pen=colors[i], name=f'{s}1')
+            curve.setDownsampling(method='peak', auto=True)   
+            curve.setClipToView(True)                       
+            self.curves_ch1.append(curve)
+
+            curve = self.plot_ch2.plot(pen=colors[i], name=f'{s}2')
+            curve.setDownsampling(method='peak', auto=True)   
+            curve.setClipToView(True)                       
+            self.curves_ch2.append(curve)
 
         self.win_strain.resize(SCREEN_WIDTH, int(SCREEN_HEIGHT * 0.32))
         self.win_strain.move(0, int(SCREEN_HEIGHT * 0.69))
@@ -654,7 +668,7 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: For validation against DARLING. Hi-STIFFS v3.2",
+        "Note: Dummy code tests",
         "Test Type: Medium Lab w/o tops",
         "Speed: 50 ft/min,Stalk Spacing: 6in,Probe Height (m): 0.785",
         f"Number of ICB-Sensors: 5, Sensor Label(s): {args.sensors}, Sensor SNs: 001 002 003 004 005",
