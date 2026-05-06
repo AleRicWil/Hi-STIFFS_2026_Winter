@@ -140,7 +140,7 @@ const char* ota_password = "BYUCropBio";   // Optional OTA password for security
 // Host server details
 // const char* host_ip = "192.168.137.1";       // IPv4 of the host server (e.g., Raspberry Pi or laptop), from device settings, not Python code
 const char* host_ip = "192.168.137.1";    // For Pi_001
-const int host_port = 80;                  // Port on host for data streaming
+const int host_port = 8080;                  // Port on host for data streaming
 WiFiClient client;                         // Global client for sending data to host
 
 // Unique Nano ID (2-digit, e.g., "01" to "99")
@@ -645,7 +645,6 @@ void setup() {
   SPI.begin();
 
   // WiFi Station mode setup
-  WiFi.mode(WIFI_STA);
   if (hasSerial) {
     Serial.println("Starting Station mode (WiFi client)...");
     Serial.print("SSID: ");
@@ -665,6 +664,9 @@ void setup() {
       Serial.print(" (");
       Serial.print(WiFi.RSSI(i));
       Serial.print(" dBm)");
+      Serial.print(" (");
+      Serial.print(WiFi.encryptionType(i), HEX);
+      Serial.print(")");
       Serial.println();
     }
   }
