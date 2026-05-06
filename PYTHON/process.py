@@ -1291,21 +1291,21 @@ class HiSTIFFSData:
 
 if __name__ == "__main__":
     times = ['203337', '203450', '203555', '203701', '203807', '203911', '204131', '204238', '204347', '204451', '204558', '204634', '204711', '204747', '204826', '204904', '204941', '205021', '205101', '205140']
-    data = HiSTIFFSData(date="2026-04-08", time=times[9], debug=True)
+    data = HiSTIFFSData(date="2026-05-05", time='175516', debug=True)
     if data.exists:
         # data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
         # data.calc_force_position(clip=False)
-        # data.plot_force_position(combined=True)
+        data.plot_force_position(combined=True)
         # plt.show()
 
         # data.interactive_detect_stalks()
-        data.detect_stalks(plot=True)
+        # data.detect_stalks(plot=True)
         
-        data.plot_detections(filter_level='clean')
-        data.estimate_all_stalks_stiffness()
-        data.save_stiffnesses(note='Validation w/DARLING. 25ft/min')
+        # data.plot_detections(filter_level='clean')
+        # data.estimate_all_stalks_stiffness()
+        # data.save_stiffnesses(note='Validation w/DARLING. 25ft/min')
 
         plt.show()
         # keyboard.wait('space')

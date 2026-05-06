@@ -26,7 +26,7 @@ VREF = 5.1  # External reference voltage (AVDD)
 VOLTS_PER_LSB = VREF / (ADS1220_PGA_GAIN * TWO_TO_23)
 
 # === Plotting parameters ===
-PLOT_REFRESH_HZ = 30  # Refresh rate for plot updates in Hz
+PLOT_REFRESH_HZ = 6  # Refresh rate for plot updates in Hz
 PROCESS_FPS = 30  # Set desired FPS for processing/dequeuing (e.g., 30 for smooth plotting)
 SCREEN_SCALE = 1.3
 SCREEN_WIDTH = int(1920*SCREEN_SCALE)
@@ -647,7 +647,7 @@ def run_collection(save_format='raw', plot=True, sensors='A', header_content=Non
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Data collection from WiFi stream")
     parser.add_argument('--save-format', choices=['volts', 'raw'], default='raw', help="Format to save strains in CSV: volts or raw")
-    parser.add_argument('--plot', type=bool, default=True, help="Enable live plotting")
+    parser.add_argument('--plot', type=bool, default=False, help="Enable live plotting")
     parser.add_argument('--sensors', default='A B C D E', help="Number of sensors (1-5) or space-separated labels (e.g., 'A C E'). Note: Data must arrive in the specified order; configure Arduino accordingly for non-sequential labels.")
     parser.add_argument('--sensor-sns', default='001,002,003,004,005', help="Comma-separated serial numbers for sensors (e.g., '001,002,003'). Must match number of sensors specified in --sensors. Used for metadata and calibration lookup.")
     args = parser.parse_args()
