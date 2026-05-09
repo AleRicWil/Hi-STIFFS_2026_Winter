@@ -310,25 +310,31 @@ class DataReceiverWriter(QtCore.QThread):
             time.sleep(sleep_duration)
             next_time += interval_sec
 
+
 class RealTimePlotWindow(QtWidgets.QMainWindow):
     """
     Class to handle real-time plotting of strain, force, and position. 
     Does not create or write to or know about CSVs.
     Now handles batched data emits (multiple packets at once).
+    
+    New feature: `show_raw_strains` flag (default=False) controls whether the secondary raw strain plots window is created.
+    - Default (False): Displays ONLY the Force and Position live plot window (lower CPU/GPU/memory usage).
+    - True: Displays Force/Position + Raw Strain windows (matches previous behavior).
+    - The existing `plot=False` path in run_collection() already provides the third option (no live plots at all).
     """
-
-    def __init__(self, readwrite, num_sensors, sensor_labels):
+    def __init__(self, readwrite, num_sensors, sensor_labels, show_raw_strains=False):
         super().__init__()
 
         print(f"\n\tPlot windows status:")
         self.num_sensors = num_sensors
         self.sensor_labels = sensor_labels
+        self.show_raw_strains = show_raw_strains  # New flag – controls raw strain window & related data handling
 
         # === Device-specific performance tuning (cross-platform) ===
         self.is_pi5 = self._detect_raspberry_pi5()
         if self.is_pi5:
             self.plot_refresh_hz = 4.0          # smoother on Pi5 touchscreen
-            self.maxlen = 1000                  # smaller buffer = less memory/CPU
+            self.maxlen = 4 * 300                  # smaller buffer = less memory/CPU
             pg.setConfigOptions(useOpenGL=False)  # OpenGL is unreliable on Pi5 display stack
             print("Detected Raspberry Pi 5 — using Pi5-optimized plot settings")
         else:
@@ -361,7 +367,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
 
         pg.setConfigOptions(useOpenGL=True, antialias=False)
 
-        # === Main Window: Force and Position Plots (now central widget) ===
+        # === Main Window: Force and Position Plots (ALWAYS created when class is instantiated) ===
         self.setWindowTitle("Force and Position - Real-Time Monitoring")
         
         self.win_force_pos = pg.GraphicsLayoutWidget()
@@ -421,48 +427,60 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.move(0, 0)
         self.show()
 
-        # === Secondary Window: Raw Strain Plots ===
-        print(f"\t\tCreating strain plots (secondary window)...")
-        self.win_strain = pg.GraphicsLayoutWidget()
-        self.win_strain.setWindowTitle("Raw Strain Data (ADC Counts)")
-        
-        self.plot_ch1 = self.win_strain.addPlot(title='Channel 1 Strains')
-        self.plot_ch1.setLabel('left', '', units='ADC Counts')
-        self.plot_ch1.addLegend()
-        
-        self.plot_ch2 = self.win_strain.addPlot(title='Channel 2 Strains')
-        self.plot_ch2.setLabel('left', '', units='ADC Counts')
-        self.plot_ch2.addLegend()
+        # === Optional Secondary Window: Raw Strain Plots (only created if flag is True) ===
+        self.win_strain = None
+        self.curves_ch1 = None
+        self.curves_ch2 = None
+        self.plot_ch1 = None
+        self.plot_ch2 = None
+        if self.show_raw_strains:
+            print(f"\t\tCreating raw strain plots (secondary window)...")
+            self.win_strain = pg.GraphicsLayoutWidget()
+            self.win_strain.setWindowTitle("Raw Strain Data (ADC Counts)")
+            
+            self.plot_ch1 = self.win_strain.addPlot(title='Channel 1 Strains')
+            self.plot_ch1.setLabel('left', '', units='ADC Counts')
+            self.plot_ch1.addLegend()
+            
+            self.plot_ch2 = self.win_strain.addPlot(title='Channel 2 Strains')
+            self.plot_ch2.setLabel('left', '', units='ADC Counts')
+            self.plot_ch2.addLegend()
 
-        self.curves_ch1 = []
-        self.curves_ch2 = []
-        for i, s in enumerate(self.sensor_labels):
-            curve = self.plot_ch1.plot(pen=colors[i], name=f'{s}1')
-            curve.setDownsampling(method='peak', auto=True)   
-            curve.setClipToView(True)                       
-            self.curves_ch1.append(curve)
+            self.curves_ch1 = []
+            self.curves_ch2 = []
+            for i, s in enumerate(self.sensor_labels):
+                curve = self.plot_ch1.plot(pen=colors[i], name=f'{s}1')
+                curve.setDownsampling(method='peak', auto=True)   
+                curve.setClipToView(True)                       
+                self.curves_ch1.append(curve)
 
-            curve = self.plot_ch2.plot(pen=colors[i], name=f'{s}2')
-            curve.setDownsampling(method='peak', auto=True)   
-            curve.setClipToView(True)                       
-            self.curves_ch2.append(curve)
+                curve = self.plot_ch2.plot(pen=colors[i], name=f'{s}2')
+                curve.setDownsampling(method='peak', auto=True)   
+                curve.setClipToView(True)                       
+                self.curves_ch2.append(curve)
 
-        self.win_strain.resize(SCREEN_WIDTH, int(SCREEN_HEIGHT * 0.32))
-        self.win_strain.move(0, int(SCREEN_HEIGHT * 0.69))
-        self.win_strain.show()
+            self.win_strain.resize(SCREEN_WIDTH, int(SCREEN_HEIGHT * 0.32))
+            self.win_strain.move(0, int(SCREEN_HEIGHT * 0.69))
+            self.win_strain.show()
 
-        # Support space key on secondary window
-        self.win_strain.installEventFilter(self)
+            # Support space key on secondary window (cross-platform Qt event handling)
+            self.win_strain.installEventFilter(self)
+        else:
+            print("\t\tRaw strain plots DISABLED (performance optimization)")
 
-        # Data buffers
+        # Data buffers – strains deques only allocated when flag is True (saves memory/CPU)
         maxlen = self.maxlen
         self.times = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
-        self.strains1 = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
-        self.strains2 = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
         self.forces = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
         self.positions = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
+        if self.show_raw_strains:
+            self.strains1 = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
+            self.strains2 = [collections.deque(maxlen=maxlen) for _ in range(self.num_sensors)]
+        else:
+            self.strains1 = None
+            self.strains2 = None
 
-        # Plot refresh timer
+        # Plot refresh timer (always runs for Force/Position; strain updates are conditional inside update_plots)
         self.plot_timer = QtCore.QTimer()
         self.plot_timer.timeout.connect(self.update_plots)
         self.plot_timer.start(int(1000 / self.plot_refresh_hz))
@@ -471,9 +489,10 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.initial_rescale_done = False
         self.last_y_rescale_time = 0.0          
         self.rescale_interval = 1.0             
+
         self.display_start_time = 1.1   # first 1.1 s of data will never be plotted or used for y-scaling
 
-        print(f"\tSuccessfully created plot windows (Force/Position as main).")
+        print(f"\tSuccessfully created plot windows (Force/Position main window{' + Raw Strains secondary' if self.show_raw_strains else ''}).")
 
     def _detect_raspberry_pi5(self):
         """Pure-Python runtime detection. Returns True only on Raspberry Pi 5 (or any Pi).
@@ -484,13 +503,11 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         try:
             # Most reliable method for Pi5 (works on all Pi models)
             with open("/proc/device-tree/model", "r", encoding="ascii") as f:
-                print('Using RasPi5')
                 return "Raspberry Pi" in f.read()
         except (OSError, FileNotFoundError):
             # Fallback for older Pi or non-Pi Linux
             try:
                 with open("/proc/cpuinfo", "r") as f:
-                    print('Using RasPi5')
                     return "Raspberry Pi" in f.read()
             except:
                 return False
@@ -498,7 +515,8 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
     def handle_data(self, data_list):
         """Handle emitted data: compute force/position, append to deques only if t >= 1.1 s.
         Early data (t < 1.1 s) is still processed for calibration but is never accumulated
-        for display or used in any y-scaling decisions."""
+        for display or used in any y-scaling decisions.
+        Strain deques are only appended when show_raw_strains=True."""
         if len(data_list) % (self.num_sensors * 3) != 0:
             print("Invalid batched data list length received for plotting.")
             return
@@ -556,23 +574,26 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
                 # (first 1.1 s is never displayed and never affects y-scaling)
                 if time_sec >= self.display_start_time:
                     self.times[i].append(time_sec)
-                    self.strains1[i].append(strain1)
-                    self.strains2[i].append(strain2)
                     self.forces[i].append(force)
                     self.positions[i].append(position * 1000)
+                    if self.show_raw_strains:
+                        self.strains1[i].append(strain1)
+                        self.strains2[i].append(strain2)
 
     def update_plots(self):
         """Update all plot curves and x-ranges. Performs the one-time automatic
         y-rescale using data from t=1.1 s to t=2.1 s once t_max >= 2.1 s.
         Thereafter, continuously auto-rescales all y-axes to fit the full
-        vertical range of the data currently visible in the x-window."""
+        vertical range of the data currently visible in the x-window.
+        Strain curve updates are skipped when show_raw_strains=False."""
         for i in range(self.num_sensors):
             if i in [1]:
                 continue
-            self.curves_ch1[i].setData(self.times[i], self.strains1[i])
-            self.curves_ch2[i].setData(self.times[i], self.strains2[i])
             self.curves_force[i].setData(self.times[i], self.forces[i])
             self.curves_pos[i].setData(self.times[i], self.positions[i])
+            if self.show_raw_strains:
+                self.curves_ch1[i].setData(self.times[i], self.strains1[i])
+                self.curves_ch2[i].setData(self.times[i], self.strains2[i])
 
         t_max = 0
         for t in self.times:
@@ -581,9 +602,13 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         x_min = max(0, t_max - self.display_time_range)
         x_max = t_max
 
-        for plot in (self.plot_ch1, self.plot_ch2, self.plot_force, self.plot_pos):
+        for plot in (self.plot_force, self.plot_pos):
             if plot is not None:
                 plot.setXRange(x_min, x_max)
+        if self.show_raw_strains:
+            for plot in (self.plot_ch1, self.plot_ch2):
+                if plot is not None:
+                    plot.setXRange(x_min, x_max)
 
         # Automatic one-time initial y-rescale on fixed early window
         if not self.initial_rescale_done and t_max >= 2.1:
@@ -594,7 +619,10 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         elif self.initial_rescale_done:
             now = time.time()
             if now - self.last_y_rescale_time >= self.rescale_interval:
-                for plot in (self.plot_force, self.plot_pos, self.plot_ch1, self.plot_ch2):
+                plots = [self.plot_force, self.plot_pos]
+                if self.show_raw_strains:
+                    plots.extend([self.plot_ch1, self.plot_ch2])
+                for plot in plots:
                     if plot is not None:
                         plot.enableAutoRange(x=False, y=True)
                 self.last_y_rescale_time = now
@@ -606,7 +634,10 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
 
     def rescale_y_axes(self):
         """Rescale all y-axes to fit only the data currently being displayed in the visible time window."""
-        for plot in (self.plot_force, self.plot_pos, self.plot_ch1, self.plot_ch2):
+        plots_to_rescale = [self.plot_force, self.plot_pos]
+        if self.show_raw_strains:
+            plots_to_rescale.extend([self.plot_ch1, self.plot_ch2])
+        for plot in plots_to_rescale:
             if plot is not None:
                 plot.getViewBox().setAutoVisible(y=True)
                 plot.autoRange()
@@ -619,9 +650,12 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         plot_ydata_pairs = [
             (self.plot_force, self.forces),
             (self.plot_pos, self.positions),
-            (self.plot_ch1, self.strains1),
-            (self.plot_ch2, self.strains2)
         ]
+        if self.show_raw_strains:
+            plot_ydata_pairs.extend([
+                (self.plot_ch1, self.strains1),
+                (self.plot_ch2, self.strains2)
+            ])
 
         for plot, y_data_lists in plot_ydata_pairs:
             if plot is None:
@@ -657,14 +691,15 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
             self.stop_collection()
 
     def stop_collection(self):
-        """Stop data collection and clean up both windows."""
+        """Stop data collection and clean up both windows (conditional on show_raw_strains)."""
         print("Keyboard 'space' was pressed. Exiting datastream loop...")
         self.close()                    # Close main window (Force/Position)
-        if hasattr(self, 'win_strain'):
-            self.win_strain.close()     # Close secondary strain window
+        if self.win_strain is not None:
+            self.win_strain.close()     # Close secondary strain window if it exists
         print('Plots closed.')
         self.plot_timer.stop()
         self.ReadWrite.running = False
+
 
 def run_collection(save_format='raw', plot=True, sensors='A', header_content=None, sensor_sns='001'):  # header_content now optional (GUI provides it)
     if sensors.isdigit():

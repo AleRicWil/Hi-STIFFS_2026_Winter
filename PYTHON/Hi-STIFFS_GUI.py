@@ -17,7 +17,7 @@ from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtWidgets import *  # Imports all widgets for concise usage (as per user preference)
 from PyQt5.QtGui import QPalette, QColor, QFont
 from PyQt5.QtCore import Qt
-from process import HiSTIFFSData
+from process import HiSTIFFSData, run_stiffness_pipeline
 from config import Config
 import collect_data as cd  # Import at top for cross-platform module access via PyQt5/Python
 
@@ -548,6 +548,13 @@ class FilePage(QWidget):
         plot_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)  # Touch size.
         right_vbox.addWidget(plot_button, stretch=2)  # Takes 2/3 vertical space in right column (cross-platform via PyQt5 stretch).
 
+        # Process Stiffness button: triggers pipeline to calculate and save stiffness of detected stalks
+        stiff_button = QPushButton("Process Selected")
+        stiff_button.setObjectName("stiff_button")
+        stiff_button.clicked.connect(self.process_selected)
+        stiff_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
+        right_vbox.addWidget(stiff_button, stretch=2)
+
         # Back button: returns to home.
         back_button = QPushButton("Back to Home")
         back_button.setObjectName("back_button")  # Unique ID.
@@ -704,7 +711,7 @@ class FilePage(QWidget):
             settings = load_settings()
             sensors_str = ','.join(data.sensor_labels)
             if settings['ui_preferences'].get('independent_plots', False):
-                data.plot_raw_strains(sensors=sensors_str)
+                data.plot_force_position(sensors=sensors_str)
                 plt.show()
             else:
                 self.embed_plots(data, sensors_str)
@@ -713,6 +720,42 @@ class FilePage(QWidget):
         except Exception as e:
             QMessageBox.critical(self, "Unexpected Error", f"An unexpected error occurred: {str(e)}")
     
+    def process_selected(self):
+        selected_items = self.tree.selectedItems()
+        if not selected_items:
+            QMessageBox.warning(self, "Selection Error", "Please select a file")
+            return
+        item = selected_items[0]
+        if not item.parent():
+            QMessageBox.warning(self, "Selection Error", "Please select a time, not a month.")
+            return
+        if not item.parent().parent():
+            QMessageBox.warning(self, "Selection Error", "Please select a time, not a day.")
+            return
+
+        data_tuple = item.data(0, QtCore.Qt.UserRole)
+        if data_tuple is None:
+            QMessageBox.warning(self, "Selection Error", "Invalid selection. Please select a valid time entry.")
+            return
+        date, time = data_tuple
+
+        try:
+            data = HiSTIFFSData(date, time)
+            if not data.exists:
+                QMessageBox.warning(self, "Data Error", "Failed to load data.")
+                return
+
+            settings = load_settings()
+            sensors_str = ','.join(data.sensor_labels)
+
+            run_stiffness_pipeline(data)
+            QMessageBox.about(self, 'Status', f'Wrote results to {data.results_path}')
+            
+        except ValueError as e:
+            QMessageBox.critical(self, "Value Error", f"Failed to process or plot the selected data: {str(e)}")
+        except Exception as e:
+            QMessageBox.critical(self, "Unexpected Error", f"An unexpected error occurred: {str(e)}")
+
     def embed_plots(self, data, sensors_str):
         # Embeds plots in a scrollable dialog (uses Qt for layout, Matplotlib for figures; cross-platform).
         data.describe_channels()

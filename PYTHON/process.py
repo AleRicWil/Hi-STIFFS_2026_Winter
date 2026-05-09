@@ -1267,12 +1267,12 @@ class HiSTIFFSData:
             directory = Config.RESULTS_BASE
 
         folder = directory / self.date 
-        path = folder / f'{self.time}_stiffnesses.csv'
+        self.results_path = folder / f'{self.time}_stiffnesses.csv'
         os.makedirs(folder, exist_ok=True)
 
         header = ['Stalk', 'Stiffness (N/m^2)', 'Estimate 1', 'Estimate 2', 'Estimate 3', 'Estimate 4']
         
-        with open(path, 'w', newline='') as f:
+        with open(self.results_path, 'w', newline='') as f:
             writer = csv.writer(f)
             if note:
                 writer.writerow(['Note: ' + note])
@@ -1285,7 +1285,14 @@ class HiSTIFFSData:
                 row = [i+1, self.stiffnesses[i], self.estimates[i][0], self.estimates[i][1], self.estimates[i][2], self.estimates[i][3]]
                 writer.writerow(row)
 
-        print(f'Wrote stiffness results to {path}')
+        print(f'Wrote stiffness results to {self.results_path}')
+
+
+def run_stiffness_pipeline(data: HiSTIFFSData, results_note: str='None') -> None:
+    data.detect_stalks(plot=False)
+    # data.plot_detections(filter_level='clean')
+    data.estimate_all_stalks_stiffness()
+    data.save_stiffnesses(note=results_note)
 
 if __name__ == "__main__":
     times = ['203337', '203450', '203555', '203701', '203807', '203911', '204131', '204238', '204347', '204451', '204558', '204634', '204711', '204747', '204826', '204904', '204941', '205021', '205101', '205140']
@@ -1299,11 +1306,7 @@ if __name__ == "__main__":
         # plt.show()
 
         # data.interactive_detect_stalks()
-
-        data.detect_stalks(plot=False)
-        data.plot_detections(filter_level='clean')
-        data.estimate_all_stalks_stiffness()
-        data.save_stiffnesses(note='Validation w/DARLING. 25ft/min')
+        run_stiffness_pipeline(data, results_note='dummy trials')
 
         plt.show()
         # keyboard.wait('space')
