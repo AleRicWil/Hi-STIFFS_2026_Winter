@@ -437,22 +437,20 @@ class HiSTIFFSData:
     def _associate_segments(self):
         # get probe velocity from sensor position data
         velocities_y = []
-        for l in self.sensor_labels:
-            if l in ['B', 'C', 'D']: continue
-            s = copy.deepcopy(self.clean_dict[f'Sensor_{l}'])
-            for start, end in s['segments_idx']:
-                time = s['time'][start:end]
-                pos = s['position'][start:end]
+        # for l in self.sensor_labels:
+        #     if l in ['B', 'C', 'D']: continue
+        #     s = copy.deepcopy(self.clean_dict[f'Sensor_{l}'])
+        #     for start, end in s['segments_idx']:
+        #         time = s['time'][start:end]
+        #         pos = s['position'][start:end]
 
-
-
-                dpos_dt, _ = np.polyfit(time, pos, deg=1)
-                print(dpos_dt)
+        #         dpos_dt, _ = np.polyfit(time, pos, deg=1)
+        #         print(dpos_dt)
                 
-                if s['type'] == 'straight': vel_y = -dpos_dt
-                elif s['type'] == 'angled': vel_y = -dpos_dt *np.cos(s['abs(yaw)_rad'])
-                else: raise ValueError(f'Sensor type in probe not available for Sensor_{l}. "straight" or "angled"')
-                velocities_y.append(vel_y)
+        #         if s['type'] == 'straight': vel_y = -dpos_dt
+        #         elif s['type'] == 'angled': vel_y = -dpos_dt *np.cos(s['abs(yaw)_rad'])
+        #         else: raise ValueError(f'Sensor type in probe not available for Sensor_{l}. "straight" or "angled"')
+        #         velocities_y.append(vel_y)
 
         self.avg_probe_vel = 0.12# np.median(velocities_y)
         self.nominal_stalk_gap = self.stalk_spacing / self.avg_probe_vel 
@@ -1291,21 +1289,21 @@ class HiSTIFFSData:
 
 if __name__ == "__main__":
     times = ['203337', '203450', '203555', '203701', '203807', '203911', '204131', '204238', '204347', '204451', '204558', '204634', '204711', '204747', '204826', '204904', '204941', '205021', '205101', '205140']
-    data = HiSTIFFSData(date="2026-05-05", time='175516', debug=True)
+    data = HiSTIFFSData(date="2026-05-06", time='194317', debug=True)
     if data.exists:
         # data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
         # data.calc_force_position(clip=False)
-        data.plot_force_position(combined=True)
+        # data.plot_force_position(combined=True)
         # plt.show()
 
         # data.interactive_detect_stalks()
-        # data.detect_stalks(plot=True)
-        
-        # data.plot_detections(filter_level='clean')
-        # data.estimate_all_stalks_stiffness()
-        # data.save_stiffnesses(note='Validation w/DARLING. 25ft/min')
+
+        data.detect_stalks(plot=False)
+        data.plot_detections(filter_level='clean')
+        data.estimate_all_stalks_stiffness()
+        data.save_stiffnesses(note='Validation w/DARLING. 25ft/min')
 
         plt.show()
         # keyboard.wait('space')
