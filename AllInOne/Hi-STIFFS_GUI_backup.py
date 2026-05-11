@@ -117,7 +117,7 @@ class SettingsDialog(QDialog):
 class HeaderConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Hardware Configuration")
+        self.setWindowTitle("Configure Header")
         self.main_layout = QGridLayout(self)
 
         self.settings = load_settings()
@@ -380,105 +380,54 @@ class HomePage(QWidget):
         layout.addItem(spacer)
 
 class CollectPage(QWidget):
-    # Overhauled CollectPage per user spec.
-    # Inline fields for quick start (Note, Test Type, Probe Height, Speed).
-    # Number of sensors + SN assignment + hardware + sensor details live ONLY in Hardware Config popup.
+    # New collection session page with Start/Stop/Back buttons (modeled after FilePage button layout).
+    # Left side left empty for future controls (status, parameters, plots, etc.).
     def __init__(self, parent=None):
         super().__init__(parent)
         self.mainwindow = parent
-        self.collecting = False
+        self.header_content = None  # Initial None, set after config
+        self.header_configured = False  # Flag for update
+        self.collecting = False  # Flag for ongoing collection
+        self.test_number = 1  # For auto-increment
 
         self.main_layout = QHBoxLayout(self)
 
-        # === LEFT PANE: main configuration (QFormLayout for clean, touch-friendly layout) ===
-        self.left_widget = QWidget()
-        self.left_layout = QFormLayout(self.left_widget)
-        self.left_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-
-        # Optional Note
-        self.note_edit = QLineEdit()
-        self.note_edit.setPlaceholderText("Optional test note (e.g. Field test 25 ft/min)")
-        self.left_layout.addRow("Note:", self.note_edit)
-
-        # Test Type
-        self.test_type_combo = QComboBox()
-        settings = load_settings()
-        test_types = ["Demo", "Lab", "Field", "Other"] + settings.get('test_config', {}).get('custom_test_types', [])
-        self.test_type_combo.addItems(test_types)
-        self.test_type_combo.currentTextChanged.connect(self.update_test_fields)
-        self.left_layout.addRow("Test Type:", self.test_type_combo)
-
-        self.other_test_edit = QLineEdit()
-        self.other_test_edit.setPlaceholderText("Custom test type")
-        self.other_test_edit.setVisible(False)
-        self.left_layout.addRow("Custom Test:", self.other_test_edit)
-
-        # Stalk Type
-        self.stalk_type_combo = QComboBox()
-        stalk_types = ['PVC-Hi', 'PVC-Med', 'Wood-Lo', 'Other']
-        self.stalk_type_combo.addItems(stalk_types)
-        self.stalk_type_combo.currentTextChanged.connect(self.update_test_fields)
-        self.left_layout.addRow('Stalk Type:', self.stalk_type_combo)
-
-        self.other_stalk_edit = QLineEdit()
-        self.other_stalk_edit.setPlaceholderText("Custom stalk type")
-        self.other_stalk_edit.setVisible(False)
-        self.left_layout.addRow("Custom Stalk:", self.other_stalk_edit)
-
-        # New fields requested by user
-        self.probe_height_spin = QDoubleSpinBox()
-        self.probe_height_spin.setRange(0.1, 2.5)
-        self.probe_height_spin.setDecimals(3)
-        self.probe_height_spin.setValue(0.785)
-        self.probe_height_spin.setSingleStep(0.01)
-        self.left_layout.addRow("Probe Height (m):", self.probe_height_spin)
-
-        self.speed_edit = QLineEdit()
-        self.speed_edit.setPlaceholderText("e.g. 25 ft/min")
-        self.left_layout.addRow("Speed:", self.speed_edit)
-
-        # Live header preview
-        self.preview_text = QTextEdit()
-        self.preview_text.setReadOnly(True)
-        self.preview_text.setMaximumHeight(240)
-        self.left_layout.addRow("Header Preview:", self.preview_text)
-        
-        self.preview_update_button = QPushButton('Update Preview')
-        self.preview_update_button.setObjectName('preview_update_button')
-        self.preview_update_button.clicked.connect(self.update_header_preview)
-        self.preview_update_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
-        self.left_layout.addRow(self.preview_update_button)
-
-        # Status label
-        self.status_label = QLabel("Ready. Configure if needed and press 'Start'")
+        # Left side: space for future additions (status, parameters, real-time plots, etc.)
+        self.left_vbox = QVBoxLayout()
+        self.status_label = QLabel("Collection Session\n\nReady - configure parameters and press Start")
         self.status_label.setAlignment(Qt.AlignCenter)
         self.status_label.setWordWrap(True)
-        self.left_layout.addRow(self.status_label)
+        self.left_vbox.addWidget(self.status_label)
+        self.left_vbox.addStretch()  # Keeps content top-aligned / centered as needed later
 
-        self.main_layout.addWidget(self.left_widget, stretch=6)
+        self.main_layout.addLayout(self.left_vbox, stretch=6)
 
-        # === RIGHT SIDE: buttons (unchanged layout, only button text updated) ===
+        # Right side: buttons (mirrors FilePage layout style)
         right_vbox = QVBoxLayout()
 
-        self.hardware_config = QPushButton("Hardware Config")
-        self.hardware_config.setObjectName("config_button")   # keeps existing scaling
-        self.hardware_config.clicked.connect(self.open_hardware_config)
-        self.hardware_config.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
-        right_vbox.addWidget(self.hardware_config, stretch=1)
+        # Configure Header button
+        config_button = QPushButton("Configure Header")
+        config_button.setObjectName("config_button")
+        config_button.clicked.connect(self.configure_header)
+        config_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
+        right_vbox.addWidget(config_button, stretch=1)
 
-        self.start_button = QPushButton("Start")
-        self.start_button.setObjectName("start_button")
-        self.start_button.clicked.connect(self.start_collection)
-        self.start_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
-        right_vbox.addWidget(self.start_button, stretch=2)
+        # Start button (large, like "Plot Selected")
+        start_button = QPushButton("Start")
+        start_button.setObjectName("start_button")
+        start_button.clicked.connect(self.start_collection)
+        start_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
+        right_vbox.addWidget(start_button, stretch=2)
 
+        # Stop button
         self.stop_button = QPushButton("Stop")
         self.stop_button.setObjectName("stop_button")
         self.stop_button.clicked.connect(self.stop_collection)
         self.stop_button.setMinimumSize(self.mainwindow.base_button_width, self.mainwindow.base_button_height)
-        self.stop_button.setEnabled(False)
+        self.stop_button.setEnabled(False)  # Disabled until starting
         right_vbox.addWidget(self.stop_button, stretch=1)
 
+        # Back button (same styling/name as FilePage for shared scaling)
         self.back_button = QPushButton("Back to Home")
         self.back_button.setObjectName("back_button")
         self.back_button.clicked.connect(parent.go_to_home)
@@ -487,163 +436,78 @@ class CollectPage(QWidget):
 
         self.main_layout.addLayout(right_vbox, stretch=1)
 
-        self.load_session_defaults()
+        # Load default header if any
+        self.load_default_header()
 
-    def update_test_fields(self, test_type: str):
-        """Dynamic visibility for cycle fields and Other field. Pure PyQt5 – cross-platform identical on all three OSes."""
- 
-        self.other_test_edit.setVisible(self.test_type_combo.currentText() == "Other")
-        self.other_stalk_edit.setVisible(self.stalk_type_combo.currentText() == 'Other')
-        self.update_header_preview()
+    def load_default_header(self):
+        # TODO: Load from last session or defaults
+        pass
 
-    def open_hardware_config(self):
-        """Opens the Deep Settings popup (HeaderConfigDialog) that now exclusively handles sensors, SNs, hardware, and number of sensors."""
-        dialog = HeaderConfigDialog(self)
-        if dialog.exec_() == QDialog.Accepted:
-            self.update_header_preview()
-
-    def load_session_defaults(self):
-        """Load last-used values from JSON settings (cross-platform persistence)."""
-        settings = load_settings()
-        session = settings.get('session_state', {})
-        self.note_edit.setText(session.get('last_note', ''))
-        last_type = session.get('last_test_type', 'Demo')
-        idx = self.test_type_combo.findText(last_type)
-        if idx >= 0:
-            self.test_type_combo.setCurrentIndex(idx)
-        self.probe_height_spin.setValue(session.get('last_probe_height', 0.785))
-        self.speed_edit.setText(session.get('last_speed', '25 ft/min'))
-        self.update_test_fields(self.test_type_combo.currentText())
-        self.update_header_preview()
-
-    def save_session_state(self):
-        """Persist current UI values for next session."""
-        settings = load_settings()
-        if 'session_state' not in settings:
-            settings['session_state'] = {}
-        session = settings['session_state']
-        session['last_note'] = self.note_edit.text().strip()
-        session['last_test_type'] = self.test_type_combo.currentText()
-        session['last_probe_height'] = self.probe_height_spin.value()
-        session['last_speed'] = self.speed_edit.text().strip()
-        save_settings(settings)
-
-    def build_header_content(self):
-        """Builds the complete header list from main-page fields + deep settings from JSON.
-        Guarantees DataReceiverWriter and process.py receive exactly the same format they expect."""
-        header = []
-        settings = load_settings()
-        session = settings.get('session_state', {})
-
-        note = self.note_edit.text().strip()
-        header.append(f"Note: {note if note else ''}")
-
-        test_type = self.test_type_combo.currentText()
-        if test_type == "Other":
-            custom = self.other_test_edit.text().strip()
-            test_type = custom or "Other"
-        header.append(f"Test Type: {test_type}")
-
-        if "Cycle" in test_type:
-            header.append(f"Test Number in Session: {self.test_number_spin.value()}, Time since Last Test: {self.test_rest_edit.text()}")
-
-        stalk_type = self.stalk_type_combo.currentText()
-        if stalk_type == "Other":
-            custom = self.other_stalk_edit.text().strip()
-            stalk_type = custom or "Other"
-        header.append(f"Stalk Type: {stalk_type}")
-
-        # New fields
-        header.append(f"Probe Height (m): {self.probe_height_spin.value():.3f}")
-        header.append(f"Speed: {self.speed_edit.text().strip()}")
-
-        # Sensor & hardware info from Deep Settings
-        num = session.get('last_num_sensors', 5)
-        labels = session.get('last_labels', ['A','B','C','D','E'])[:num]
-        sns = session.get('last_sns', [])[:num]
-        if len(sns) < num:
-            sns += [''] * (num - len(sns))
-
-        header.append(f"Number of ICB-Sensors: {num}, Sensor Label(s): {' '.join(labels)}, Sensor Serial#(s): {' '.join(sns)}")
-
-        sensors = settings.get('sensors', [])
-        for i, l in enumerate(labels):
-            sn = sns[i] if i < len(sns) else ''
-            sensor = next((s for s in sensors if s.get('sn') == sn), {})
-            header.append(f"ICB-Sensor {l}'s Serial#: {sn}, Length (mm): {sensor.get('length', '')}, "
-                         f"Spacing (mm): {sensor.get('spacing', '')}, Saturation Load (N): {sensor.get('saturation_load', '')}, "
-                         f"Microstrain at Saturation: {sensor.get('saturation_microstrain', '')}")
-
-        hw = settings.get('hardware_config', {})
-        header.append(hw.get('adc_config', "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_90SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV"))
-        header.append(hw.get('daq_config', "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano_01, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"))
-
-        return header
-
-    def update_header_preview(self):
-        """Live preview of metadata that will be written to CSV."""
-        try:
-            content = self.build_header_content()
-            self.preview_text.setPlainText('\n'.join(content))
-        except Exception:
-            self.preview_text.setPlainText("Preview unavailable. Open Hardware Config first")
+    def configure_header(self):
+        self.dialog = HeaderConfigDialog(self)
+        if self.dialog.exec_() == QDialog.Accepted:
+            self.header_content = self.dialog.get_header_content()
+            self.header_configured = True
+            self.status_label.setText("Header configured. Ready to start.")
 
     def start_collection(self):
-        """Directly instantiates DataReceiverWriter + RealTimePlotWindow (mirrors original collect_data.py architecture).
-        Fully cross-platform: uses the same PyQt5 QApplication context and classes that behave identically on Windows 10/11, Ubuntu Linux, and Raspberry Pi 5 touchscreen."""
         if self.collecting:
+            return  # Prevent multiple starts
+
+        if not self.header_configured:
+            QMessageBox.warning(self, "Configuration Required", "Please configure the header before starting collection.")
             return
 
-        self.save_session_state()
-        self.header_content = self.build_header_content()
-
-        # Pull current session config (already persisted by Deep Settings)
-        settings = load_settings()
-        session = settings.get('session_state', {})
-        num_sensors = session.get('last_num_sensors', 5)
-        sensor_labels = session.get('last_labels', ['A', 'B', 'C', 'D', 'E'])[:num_sensors]
-        sensor_sns = session.get('last_sns', [])[:num_sensors]
-        if len(sensor_sns) < num_sensors:
-            sensor_sns += ['unknown'] * (num_sensors - len(sensor_sns))
-
-        self.collecting = True
-        self.start_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
-        self.status_label.setText("COLLECTING DATA... (press SPACE in plot window or Stop button)")
+        # Parse sensors from header_content - string parsing is cross-platform and works identically on Windows, Linux, and Raspberry Pi
+        sensors_line = next((line for line in self.header_content if "Number of ICB-Sensors:" in line), None)
+        if sensors_line is None:
+            QMessageBox.warning(self, "Error", "Could not find sensor information in header.")
+            return
 
         try:
-            # Direct object creation - identical to original run_collection() flow
-            self.ReadWrite = cd.DataReceiverWriter(
-                num_sensors=num_sensors,
-                sensor_labels=sensor_labels,
-                sensor_sns=sensor_sns,
-                header_content=self.header_content
-            )
+            parts = sensors_line.split(',')
+            labels_part = parts[1].split("Sensor Label(s): ")[1].strip()
+            serial_nums_part = parts[2].split("Sensor Serial#(s): ")[1].strip()
+            sensor_labels = labels_part
+            serial_nums = serial_nums_part
+        except IndexError:
+            QMessageBox.warning(self, "Error", "Invalid sensor label format in header.")
+            return
 
-            self.plot_window = cd.RealTimePlotWindow(
-                self.ReadWrite,
-                num_sensors,
-                sensor_labels
-            )
+        # Extract num_sensors from the line as well for consistency
+        num_part = sensors_line.split(", Sensor Label(s):")[0].split(": ")[1].strip()
+        num_sensors = int(num_part)
 
-            self.ReadWrite.start()   # starts the TCP receiver / CSV writer thread
+        self.collecting = True
+        self.stop_button.setEnabled(True)
+        self.back_button.setEnabled(False)  # Lock back button during collection to prevent navigation issues (cross-platform UI state management via PyQt5)
+        self.status_label.setText("Collecting data... Press Stop to end.")
 
-        except Exception as e:
-            QMessageBox.critical(self, "Collection Error", f"Failed to start collection:\n{str(e)}")
-            self.stop_collection()
+        # Initialize data receiver and plot window directly (avoids creating a new QApplication, integrates with existing GUI app)
+        # This approach ensures cross-platform compatibility as PyQt5 handles widget creation and threading uniformly across OSes
+        self.ReadWrite = cd.DataReceiverWriter(num_sensors=num_sensors, sensor_sns=serial_nums.split(' '), sensor_labels=sensor_labels.split(' '), header_content=self.header_content)
+        self.window = cd.RealTimePlotWindow(self.ReadWrite, num_sensors, sensor_labels.split(' '))
+        self.ReadWrite.start()
 
     def stop_collection(self):
-        """Clean shutdown of collection objects (called by Stop button or plot window close)."""
-        if hasattr(self, 'ReadWrite') and self.ReadWrite is not None:
+        if self.collecting:
             self.ReadWrite.running = False
-        if hasattr(self, 'plot_window') and hasattr(self.plot_window, 'stop_collection'):
-            self.plot_window.stop_collection()
+            self.ReadWrite.wait()
+            self.collecting = False
+            self.stop_button.setEnabled(False)
+            self.back_button.setEnabled(True)
+            self.status_label.setText("Collection stopped.")
+            # Auto-increment if cycle
+            if "Cycle" in self.header_content[1]:  # Assuming index
+                self.test_number += 1
+                # Update header with new test_number
+            self.header_configured = False  # Reset for next
 
-        self.collecting = False
-        self.start_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
-        self.status_label.setText("Collection stopped. Ready for next test.")
+    def update_status(self, msg):
+        self.status_label.setText(msg)
 
+    def update_rate(self, rate):
+        self.status_label.setText(f"Collecting... Rate: {rate:.1f} Hz")
 
 class FilePage(QWidget):
     # File selection page: allows browsing, year selection, tree view of data, and plotting.
@@ -1231,13 +1095,7 @@ def load_settings():
         'session_state': {
             'last_num_sensors': 5,
             'last_labels': ['A', 'B', 'C', 'D', 'E'],
-            'last_sns': [],
-            'last_note': '',
-            'last_test_type': 'Demo',
-            'last_test_number': 1,
-            'last_test_rest': '',
-            'last_probe_height': 0.785,
-            'last_speed': '25 ft/min'
+            'last_sns': []
         }
     }
 

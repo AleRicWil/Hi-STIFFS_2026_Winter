@@ -702,6 +702,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
 
 
 def run_collection(save_format='raw', plot=True, sensors='A', header_content=None, sensor_sns='001'):  # header_content now optional (GUI provides it)
+    print('Starting collection function...')
     if sensors.isdigit():
         num = int(sensors)
         if num < 1 or num > 5:
