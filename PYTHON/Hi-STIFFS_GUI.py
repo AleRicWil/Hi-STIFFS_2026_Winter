@@ -6,17 +6,23 @@
 # Touchscreen optimizations include larger minimum widget sizes for finger taps (e.g., buttons >=60px height) and
 # explicit size controls to prevent small, hard-to-tap elements. Scaling is applied dynamically for different screen sizes.
 
+# Standard Libraries
 import sys
 import os
 import json
 import re
 import calendar
+from datetime import date
+
+# Installed packages
 import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5 import QtWidgets, QtCore
 from PyQt5.QtWidgets import *  # Imports all widgets for concise usage (as per user preference)
 from PyQt5.QtGui import QPalette, QColor, QFont
 from PyQt5.QtCore import Qt
+
+# Project source code
 from process import HiSTIFFSData, run_stiffness_pipeline
 from config import Config
 import collect_data as cd  # Import at top for cross-platform module access via PyQt5/Python
@@ -114,7 +120,7 @@ class SettingsDialog(QDialog):
                 sensors.append(sensor)
         return sensors
 
-class HeaderConfigDialog(QDialog):
+class HardwareConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Hardware Configuration")
@@ -124,40 +130,6 @@ class HeaderConfigDialog(QDialog):
         self.sensors = self.settings.get('sensors', [])
         self.adc_config = self.settings['hardware_config'].get('adc_config', "")
         self.daq_config = self.settings['hardware_config'].get('daq_config', "")
-
-        # Note
-        self.note_edit = QLineEdit()
-        self.main_layout.addWidget(QLabel("Optional Note:"), 0, 0)
-        self.main_layout.addWidget(self.note_edit, 0, 1) # Place at row 0, column 0
-
-        # Test Type
-        self.test_type_combo = QComboBox()
-        test_types = ["Demo","Force Cycle", "Displacement Cycle", "Static Load", "Other"] + self.settings['test_config'].get('custom_test_types', [])
-        self.test_type_combo.addItems(test_types)
-        self.test_type_combo.currentTextChanged.connect(self.update_test_fields)
-        self.main_layout.addWidget(QLabel("Test Type:"), 1, 0)
-        self.main_layout.addWidget(self.test_type_combo, 1, 1)
-
-        self.other_edit = QLineEdit()
-        self.other_edit.setVisible(False)
-        self.main_layout.addWidget(self.other_edit, 2, 1)
-
-        # Dynamic fields for test params
-        self.params_layout = QFormLayout()
-        self.main_layout.addLayout(self.params_layout, 3, 1)
-
-        # Test Number (shown only for cycles)
-        self.test_number_spin = QSpinBox()
-        self.test_number_label = QLabel("Test Number in Session:")
-        self.params_layout.addRow(self.test_number_label, self.test_number_spin)
-        self.test_rest_edit = QLineEdit()
-        self.test_rest_label = QLabel("Time since Last Test:")
-        self.params_layout.addRow(self.test_rest_label, self.test_rest_edit)
-        # Initial hide (cross-platform visibility toggle via PyQt5)
-        self.test_number_label.setVisible(False)
-        self.test_number_spin.setVisible(False)
-        self.test_rest_label.setVisible(False)
-        self.test_rest_edit.setVisible(False)
 
         # Number of Sensors
         self.num_sensors_spin = QSpinBox()
@@ -460,6 +432,23 @@ class CollectPage(QWidget):
         # === RIGHT SIDE: buttons (unchanged layout, only button text updated) ===
         right_vbox = QVBoxLayout()
 
+        # Today's test count readout - ultra-compact (small font + fixed tiny height)
+        # Sits in the existing small gap at the top of the right column without shifting buttons
+        self.test_count_label = QLabel("Tests done today: 0")
+        self.test_count_label.setAlignment(Qt.AlignCenter)
+        self.test_count_label.setObjectName("test_count_label")  # enables existing scaling
+
+        # One or two sizes smaller than normal
+        small_font = QFont(self.mainwindow.base_normal_font)
+        small_font.setPointSize(int(self.mainwindow.small2_font_size * self.mainwindow.screen_scale))
+        self.test_count_label.setFont(small_font)
+
+        # Force minimal vertical footprint (cross-platform identical on Win/Ubuntu/RPi5)
+        self.test_count_label.setFixedHeight(int(28 * self.mainwindow.screen_scale))
+        self.test_count_label.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Fixed)
+
+        right_vbox.addWidget(self.test_count_label, stretch=0)
+
         self.hardware_config = QPushButton("Hardware Config")
         self.hardware_config.setObjectName("config_button")   # keeps existing scaling
         self.hardware_config.clicked.connect(self.open_hardware_config)
@@ -488,6 +477,12 @@ class CollectPage(QWidget):
         self.main_layout.addLayout(right_vbox, stretch=1)
 
         self.load_session_defaults()
+        self.update_test_count()
+
+        # Collection monitor timer
+        self.collection_timer = QtCore.QTimer(self)
+        self.collection_timer.timeout.connect(self.monitor_collection)
+        self.collection_timer.setInterval(1000)  # check every second
 
     def update_test_fields(self, test_type: str):
         """Dynamic visibility for cycle fields and Other field. Pure PyQt5 – cross-platform identical on all three OSes."""
@@ -498,7 +493,7 @@ class CollectPage(QWidget):
 
     def open_hardware_config(self):
         """Opens the Deep Settings popup (HeaderConfigDialog) that now exclusively handles sensors, SNs, hardware, and number of sensors."""
-        dialog = HeaderConfigDialog(self)
+        dialog = HardwareConfigDialog(self)
         if dialog.exec_() == QDialog.Accepted:
             self.update_header_preview()
 
@@ -588,6 +583,17 @@ class CollectPage(QWidget):
         except Exception:
             self.preview_text.setPlainText("Preview unavailable. Open Hardware Config first")
 
+    def update_test_count(self):
+        """Count all .csv files in today's Raw Data folder (no subfolders)."""
+        today_str = date.today().isoformat()          # e.g. 2026-05-11
+        date_folder = Config.RAW_DATA_BASE / today_str
+        if date_folder.exists() and date_folder.is_dir():
+            csv_count = sum(1 for f in date_folder.iterdir()
+                            if f.is_file() and f.suffix.lower() == '.csv')
+        else:
+            csv_count = 0
+        self.test_count_label.setText(f"Tests done today: {csv_count}")
+
     def start_collection(self):
         """Directly instantiates DataReceiverWriter + RealTimePlotWindow (mirrors original collect_data.py architecture).
         Fully cross-platform: uses the same PyQt5 QApplication context and classes that behave identically on Windows 10/11, Ubuntu Linux, and Raspberry Pi 5 touchscreen."""
@@ -627,10 +633,21 @@ class CollectPage(QWidget):
             )
 
             self.ReadWrite.start()   # starts the TCP receiver / CSV writer thread
+            self.collection_timer.start()
 
         except Exception as e:
             QMessageBox.critical(self, "Collection Error", f"Failed to start collection:\n{str(e)}")
             self.stop_collection()
+
+    def monitor_collection(self):
+        """
+        Polls self.ReadWrite.running every second.
+        When the plot window closes the collection (SPACE / STOP button), this auto-calls stop_collection().
+        """
+        if hasattr(self, 'ReadWrite') and not self.ReadWrite.running:
+            self.collection_timer.stop()
+            self.stop_collection()
+        
 
     def stop_collection(self):
         """Clean shutdown of collection objects (called by Stop button or plot window close)."""
@@ -643,6 +660,7 @@ class CollectPage(QWidget):
         self.start_button.setEnabled(True)
         self.stop_button.setEnabled(False)
         self.status_label.setText("Collection stopped. Ready for next test.")
+        self.update_test_count()
 
 
 class FilePage(QWidget):

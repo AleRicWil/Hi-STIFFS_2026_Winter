@@ -408,10 +408,18 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
             btn.clicked.connect(lambda _, p=preset: self.set_time_range(p))
             preset_layout.addWidget(btn)
 
-        # Rescale Y button (now on main window)
+        # Rescale Y button
         rescale_btn = QtWidgets.QPushButton("Rescale Y")
         rescale_btn.clicked.connect(self.rescale_y_axes)
         preset_layout.addWidget(rescale_btn)
+
+        # STOP button — identical behavior to CollectPage Stop button
+        # (closes both plot windows, stops DataReceiverWriter, flushes CSV, etc.)
+        stop_btn = QtWidgets.QPushButton("STOP")
+        stop_btn.setStyleSheet("QPushButton { background-color: #c42; color: white; font-weight: bold; padding: 4px 12px; }")
+        stop_btn.setMinimumWidth(200)
+        stop_btn.clicked.connect(self.stop_collection)   # re-uses existing method → zero duplication
+        preset_layout.addWidget(stop_btn)
 
         preset_layout.addStretch()
         self.rate_label = QtWidgets.QLabel("Input Rate: 0 Hz")
