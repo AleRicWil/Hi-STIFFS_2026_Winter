@@ -34,6 +34,37 @@ SCREEN_SCALE = 1.3
 SCREEN_WIDTH = int(1920*SCREEN_SCALE)
 SCREEN_HEIGHT = int(1080*SCREEN_SCALE)
 
+# === NavX2 packet schema ===
+# Binary payload order mirrors NavX2I2C::appendBinaryPayload() in the Nano firmware.
+NAVX2_BINARY_FMT = '<BIIhhhHHhhhhhhhiiiHHBB'
+NAVX2_BINARY_BYTES = struct.calcsize(NAVX2_BINARY_FMT)
+NAVX2_CSV_HEADERS = [
+    'NavX2_Flags_raw',
+    'NavX2_Valid',
+    'NavX2_Fresh',
+    'NavX2_Timestamp_us',
+    'NavX2_NavX_Timestamp_ms',
+    'NavX2_Yaw_deg',
+    'NavX2_Pitch_deg',
+    'NavX2_Roll_deg',
+    'NavX2_Heading_deg',
+    'NavX2_Fused_Heading_deg',
+    'NavX2_Accel_X_g',
+    'NavX2_Accel_Y_g',
+    'NavX2_Accel_Z_g',
+    'NavX2_Quat_W',
+    'NavX2_Quat_X',
+    'NavX2_Quat_Y',
+    'NavX2_Quat_Z',
+    'NavX2_Disp_X_m',
+    'NavX2_Disp_Y_m',
+    'NavX2_Disp_Z_m',
+    'NavX2_Sensor_Status',
+    'NavX2_Capability_Flags',
+    'NavX2_Cal_Status',
+    'NavX2_Selftest_Status',
+]
+
 
 class DataReceiverWriter(QtCore.QThread):
     """Thread for hosting a TCP server to receive WiFi data from Nano, processing to volts, writing to CSV, and emitting signals to other threads.
@@ -109,6 +140,7 @@ class DataReceiverWriter(QtCore.QThread):
         data_headers = []
         for l in self.sensor_labels:
             data_headers += [f'Time_{l}_sec', f'Strain_{l}1_raw', f'Strain_{l}2_raw']
+        data_headers += NAVX2_CSV_HEADERS
         data_headers += ['Processed_Time']
         self.csvwriter.writerow(data_headers)
 
@@ -144,6 +176,44 @@ class DataReceiverWriter(QtCore.QThread):
                 else:
                     crc >>= 1
         return crc
+
+    def decode_navx2_payload(self, navx_payload):
+        if len(navx_payload) != NAVX2_BINARY_BYTES:
+            raise ValueError(f"Invalid NavX2 payload length: {len(navx_payload)}")
+
+        unpacked = struct.unpack(NAVX2_BINARY_FMT, navx_payload)
+        flags = unpacked[0]
+        return {
+            'NavX2_Flags_raw': flags,
+            'NavX2_Valid': flags & 0x01,
+            'NavX2_Fresh': (flags >> 1) & 0x01,
+            'NavX2_Timestamp_us': unpacked[1],
+            'NavX2_NavX_Timestamp_ms': unpacked[2],
+            'NavX2_Yaw_deg': unpacked[3] / 100.0,
+            'NavX2_Pitch_deg': unpacked[4] / 100.0,
+            'NavX2_Roll_deg': unpacked[5] / 100.0,
+            'NavX2_Heading_deg': unpacked[6] / 100.0,
+            'NavX2_Fused_Heading_deg': unpacked[7] / 100.0,
+            'NavX2_Accel_X_g': unpacked[8] / 1000.0,
+            'NavX2_Accel_Y_g': unpacked[9] / 1000.0,
+            'NavX2_Accel_Z_g': unpacked[10] / 1000.0,
+            'NavX2_Quat_W': unpacked[11] / 16384.0,
+            'NavX2_Quat_X': unpacked[12] / 16384.0,
+            'NavX2_Quat_Y': unpacked[13] / 16384.0,
+            'NavX2_Quat_Z': unpacked[14] / 16384.0,
+            'NavX2_Disp_X_m': unpacked[15] / 65536.0,
+            'NavX2_Disp_Y_m': unpacked[16] / 65536.0,
+            'NavX2_Disp_Z_m': unpacked[17] / 65536.0,
+            'NavX2_Sensor_Status': unpacked[18],
+            'NavX2_Capability_Flags': unpacked[19],
+            'NavX2_Cal_Status': unpacked[20],
+            'NavX2_Selftest_Status': unpacked[21],
+        }
+
+    def build_navx2_csv_row(self, navx_data=None):
+        if navx_data is None:
+            return [''] * len(NAVX2_CSV_HEADERS)
+        return [navx_data[field] for field in NAVX2_CSV_HEADERS]
 
     def run(self):
         print("Starting TCP server...")
@@ -232,15 +302,22 @@ class DataReceiverWriter(QtCore.QThread):
             while not self.receive_queue.empty():
                 post_data = self.receive_queue.get()
 
-                # Unpack the binary data (same as before)
-                expected_len = 1 + self.num_sensors * 12  # 1 byte ID + sensors * (4 ts + 4 raw1 + 4 raw2)
-                if len(post_data) != expected_len:
-                    self.status_signal.emit(f"Invalid data packet of len:{len(post_data)}. Expected len:{expected_len}")
+                # Accept both the legacy sensor-only payload and the new sensor + NavX2 payload.
+                legacy_len = 1 + self.num_sensors * 12  # 1 byte ID + sensors * (4 ts + 4 raw1 + 4 raw2)
+                extended_len = legacy_len + NAVX2_BINARY_BYTES
+                navx_payload = None
+                if len(post_data) == legacy_len:
+                    sensor_payload = post_data
+                elif len(post_data) == extended_len:
+                    sensor_payload = post_data[:legacy_len]
+                    navx_payload = post_data[legacy_len:]
+                else:
+                    self.status_signal.emit(f"Invalid data packet of len:{len(post_data)}. Expected len:{legacy_len} or {extended_len}")
                     continue
 
                 fmt = '<B' + 'Iii' * self.num_sensors  # Little-endian: uint8, then per sensor: uint32 ts_us, int32 raw1, int32 raw2
                 try:
-                    unpacked = struct.unpack(fmt, post_data)
+                    unpacked = struct.unpack(fmt, sensor_payload)
                     probe_id = unpacked[0]
                     if probe_id != 1:  # Assuming NANO_ID="01" -> atoi=1; adjust if different
                         self.status_signal.emit(f"Unexpected Probe ID: {probe_id}")
@@ -251,6 +328,7 @@ class DataReceiverWriter(QtCore.QThread):
                     raws2 = unpacked[3::3]
                     
                     times = [ts / 1000000.0 for ts in times_us]
+                    navx_data = self.decode_navx2_payload(navx_payload) if navx_payload is not None else None
                 except (ValueError, struct.error):
                     self.status_signal.emit("Cannot unpack binary data")
                     continue
@@ -263,6 +341,7 @@ class DataReceiverWriter(QtCore.QThread):
                 row = []
                 for j in range(self.num_sensors):
                     row += [f"{times[j]:.6f}", f"{raws1[j]:+08d}", f"{raws2[j]:+08d}"]
+                row += self.build_navx2_csv_row(navx_data)
                 row += [now.time()]
                 batch_rows.append(row)
 

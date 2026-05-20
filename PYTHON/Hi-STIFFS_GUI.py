@@ -572,6 +572,7 @@ class CollectPage(QWidget):
         hw = settings.get('hardware_config', {})
         header.append(hw.get('adc_config', "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_90SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV"))
         header.append(hw.get('daq_config', "DAQ Microcontroller: Arduino Nano ESP32, ID: Hi-STIFFS_Nano_01, CPU Clock: 240MHz, Cores: 2, Data-stream Connection: Wi-Fi"))
+        header.append("Packet Schema: Extended NavX2 payload v1 (sensor block + NavX2 telemetry)")
 
         return header
 
