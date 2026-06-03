@@ -1,6 +1,6 @@
 ===BEGIN_METADATA===
 Test Name: 2026-06-01_111913_01,yyyy-mm-dd_hhmmss_{probe_num}
-Note: Dummy code tests
+Note: Calibration sequence for old filter characteristics
 Test Type: Calibration
 Loads (N): 10 35 70,Positions (mm): 60 75 95
 "Speed: 50 ft/min,Stalk Spacing: 6in,Probe Height (m): 0.785"
