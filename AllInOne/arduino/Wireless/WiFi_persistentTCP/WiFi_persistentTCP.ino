@@ -167,7 +167,7 @@ SensorConfig all_configs[MAX_SENSORS] = {
 
 Protocentral_ADS1220 adcs[MAX_SENSORS];             // ADC objects from library
 int32_t raw_values[MAX_SENSORS][2];                 // [sensor][channel]: raw 24-bit signed ADC values; 0=ch1 (AIN0-1), 1=ch2 (AIN2-3)
-unsigned long timestamps[MAX_SENSORS];              // Per-chip timestamps for each pair
+unsigned long timestamps[MAX_SENSORS] = {100000.0};              // Per-chip timestamps for each pair
 uint8_t current_channels[MAX_SENSORS] = {0};        // Indicates which MUX channel to read from for an ADS1220 module
 volatile uint8_t ready_mask = 0;                    // Bitmask tracking ready sensors (bit i set to (1) when sensor i pair is complete)
 unsigned long time_init;                            // t=0 of datastream. Set each time connection initiates datastream
@@ -462,6 +462,7 @@ void handleOTA() {
 
 // Check if all data pairs are ready for this cycle
 bool checkDataReady() {
+  return true;
   uint8_t all_ready_mask = (1U << NUM_SENSORS) - 1;  // Local compile-time constant. Stored in CPU stack for compare, not created in and read from RAM.
   if (ready_mask == all_ready_mask) {
     ready_mask = 0;   // reset all bits in the mask to 0
@@ -567,8 +568,7 @@ void connectToHost() {
   unsigned long now = millis();
   if (now - lastRetry >= WiFi_RETRY_DELAY_MS) {
     lastRetry = now;
-    if (hasSerial) Serial.print("Connecting to ");
-    if (hasSerial) Serial.println(ssid);
+    if (hasSerial) Serial.println(" "); Serial.print("Connecting to "); Serial.println(ssid);
 
     WiFi.begin(ssid, password);
     unsigned long startAttempt = millis();
@@ -578,9 +578,12 @@ void connectToHost() {
     }
 
     if (WiFi.status() == WL_CONNECTED) {
-      if (hasSerial) Serial.println("\nWiFi connected");
-      if (hasSerial) Serial.print("IP address: ");
-      if (hasSerial) Serial.println(WiFi.localIP());
+      if (hasSerial) {
+        Serial.println("\nWiFi connected"); 
+        Serial.print("IP address: "); 
+        Serial.println(WiFi.localIP());
+        Serial.println("Attemping TCP server connection...");
+      }
 
       // Establish persistent TCP connection
       if (client.connect(host_ip, host_port)) {
@@ -591,11 +594,13 @@ void connectToHost() {
         packet_queue.clear();  // Clear any stale packets
         ArduinoOTA.end();
         if (hasSerial) Serial.println("Entering CONNECTED state.");
-      } else {
-        if (hasSerial) Serial.println("TCP connection failed");
+      } 
+      else {
+        if (hasSerial) Serial.println("TCP server connection failed");
       }
-    } else {
-      if (hasSerial) Serial.println("\nConnection failed, retrying...");
+    } 
+    else {
+      if (hasSerial) Serial.println("\nWiFi Connection failed, retrying...");
     }
   }
 }
@@ -639,23 +644,27 @@ void setup() {
     }
   }
   hasSerial = Serial;  // Set flag based on connection
-  if (hasSerial) Serial.println(" "); Serial.println("Serial connected for debugging");
+  if (hasSerial) {
+    Serial.println(" "); 
+    Serial.println("Serial connected for debugging");
+    Serial.print("Nano_ID: ");
+    Serial.println(NANO_ID);
+  }
 
   // SPI init
   SPI.begin();
 
   // WiFi Station mode setup
   if (hasSerial) {
-    Serial.println("Starting Station mode (WiFi client)...");
-    Serial.print("SSID: ");
-    Serial.print(ssid);
-    Serial.print(". Password: ");
-    Serial.println(password);
+    Serial.println("Starting station mode. Arduino is WiFi client looking for following network...");
+    Serial.print("SSID: "); Serial.print(ssid);
+    Serial.print(". Password: "); Serial.println(password);
+    Serial.println("Scanning for available networks...");
   }
 
   WiFi.mode(WIFI_STA);
   int n = WiFi.scanNetworks();
-  Serial.println("Scan done");
+  Serial.println("WiFi network scan done. Listing networks...");
   if (n == 0) {
     Serial.println("No networks found");
   } else {
