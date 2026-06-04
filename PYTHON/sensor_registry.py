@@ -54,6 +54,7 @@ class SensorRegistry:
                 return self._default_coeffs()
             identifier = sn
         sn = str(identifier).zfill(3)
+        print(f'[SensorRegistry] Retrieved calibration for sensor {sn}')
         return self.coeffs_by_sn.get(sn, self._default_coeffs())
 
     def _default_coeffs(self):

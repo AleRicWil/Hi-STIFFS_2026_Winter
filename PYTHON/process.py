@@ -1296,9 +1296,9 @@ def run_stiffness_pipeline(data: HiSTIFFSData, results_note: str='None') -> None
 
 if __name__ == "__main__":
     times = ['203337', '203450', '203555', '203701', '203807', '203911', '204131', '204238', '204347', '204451', '204558', '204634', '204711', '204747', '204826', '204904', '204941', '205021', '205101', '205140']
-    data = HiSTIFFSData(date="2026-05-06", time='194317', debug=True)
+    data = HiSTIFFSData(date="2026-06-01", time='140207', debug=True)
     if data.exists:
-        # data.plot_raw_strains(combined=False)
+        data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
         # data.calc_force_position(clip=False)
@@ -1306,7 +1306,7 @@ if __name__ == "__main__":
         # plt.show()
 
         # data.interactive_detect_stalks()
-        run_stiffness_pipeline(data, results_note='dummy trials')
+        # run_stiffness_pipeline(data, results_note='dummy trials')
 
         plt.show()
         # keyboard.wait('space')
