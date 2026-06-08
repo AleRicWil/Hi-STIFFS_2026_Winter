@@ -117,8 +117,8 @@
 #include <vector>       // For storing binary packet data
 
 #define FULL_SCALE (1LL << 23) // 2^23 for 24-bit signed scaling - retained for reference, though not used in raw output
-#define A_DRDY_PIN 10
-#define A_CS_PIN 9
+#define A_DRDY_PIN 9
+#define A_CS_PIN 10
 #define B_DRDY_PIN 8
 #define B_CS_PIN 7
 #define C_DRDY_PIN 6
@@ -128,8 +128,12 @@
 #define E_DRDY_PIN 2
 #define E_CS_PIN A6
 
+const int SPI_SCK  = 13;   // default D13
+const int SPI_MISO = 11;   // default D12 (CIPO)
+const int SPI_MOSI = 12;   // default D11 (COPI)
+
 const int MAX_SENSORS = 5;     // Maximum possible sensors (A to E)
-const int NUM_SENSORS = 5;     // Set to 1-5 to use the first N sensors from all_configs below.
+const int NUM_SENSORS = 1;     // Set to 1-5 to use the first N sensors from all_configs below.
 const uint8_t dr_code = DR_330SPS;  // Data Rate value. In turbo, value is for pairs/sec. In normal, value is for samples/sec
 const SPISettings spi_settings(2000000, MSBFIRST, SPI_MODE1);
 
@@ -167,7 +171,7 @@ SensorConfig all_configs[MAX_SENSORS] = {
 
 Protocentral_ADS1220 adcs[MAX_SENSORS];             // ADC objects from library
 int32_t raw_values[MAX_SENSORS][2];                 // [sensor][channel]: raw 24-bit signed ADC values; 0=ch1 (AIN0-1), 1=ch2 (AIN2-3)
-unsigned long timestamps[MAX_SENSORS] = {100000.0};              // Per-chip timestamps for each pair
+unsigned long timestamps[MAX_SENSORS];              // Per-chip timestamps for each pair
 uint8_t current_channels[MAX_SENSORS] = {0};        // Indicates which MUX channel to read from for an ADS1220 module
 volatile uint8_t ready_mask = 0;                    // Bitmask tracking ready sensors (bit i set to (1) when sensor i pair is complete)
 unsigned long time_init;                            // t=0 of datastream. Set each time connection initiates datastream
@@ -237,6 +241,7 @@ void IRAM_ATTR handleDrdyA() {
     timestamps[i] = interrupt_time - time_init;
     ready_mask |= (1 << i);
   }
+  Serial.println(val);
 }
 
 void IRAM_ATTR handleDrdyB() {
@@ -414,9 +419,9 @@ void initializeADCs() {
     current_channels[i] = 0;
 
     if (hasSerial) {
-      Serial.print("Setup complete for Sensor [enumerated as: ");
-      Serial.print(i);
-      Serial.println("]");
+      Serial.print("Setup complete for Sensor [enumerated as: "); Serial.print(i); Serial.println("]");
+      Serial.print("CS: "); Serial.print(all_configs[i].cs_pin); 
+      Serial.print(" DRDY: "); Serial.println(all_configs[i].drdy_pin);
     }
     delay(100);
   }
@@ -462,7 +467,6 @@ void handleOTA() {
 
 // Check if all data pairs are ready for this cycle
 bool checkDataReady() {
-  return true;
   uint8_t all_ready_mask = (1U << NUM_SENSORS) - 1;  // Local compile-time constant. Stored in CPU stack for compare, not created in and read from RAM.
   if (ready_mask == all_ready_mask) {
     ready_mask = 0;   // reset all bits in the mask to 0
@@ -652,7 +656,7 @@ void setup() {
   }
 
   // SPI init
-  SPI.begin();
+  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
 
   // WiFi Station mode setup
   if (hasSerial) {
