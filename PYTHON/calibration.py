@@ -490,15 +490,18 @@ def zero_shift_correction(collection_path):
 
 if __name__ == "__main__":
     # run_calibration('A', '001', [10, 50], [60, 100])   
-    old_paths = [r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163645_01.csv',
-                 r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163754_01.csv',
-                 r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163843_01.csv',
-                 r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163945_01.csv']
+    # old_paths = [r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163645_01.csv',
+    #              r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163754_01.csv',
+    #              r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163843_01.csv',
+    #              r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163945_01.csv']
     # generate_summary(old_paths)
 
-    # zero_shift_correction(r'Hi-STIFFS_2026_Winter\Raw Data\2026-03-13\2026-03-13_133242_01.csv')
-    # summary_from_dwells(r'Hi-STIFFS_2026_Winter\Raw Data\2026-03-13\2026-03-13_133242_01.csv')
-    calculate_coefficients(r'Hi-STIFFS_2026_Winter\Raw Data\2026-03-13\calibration_005.csv')
+    path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-06-10\2026-06-10_124831_01.csv'
+    sum_path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-06-10\calibration_005.csv'
+
+    # zero_shift_correction(path)
+    # summary_from_dwells(path)
+    calculate_coefficients(sum_path)
 
     
     

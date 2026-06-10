@@ -247,7 +247,7 @@ class DataReceiverWriter(QtCore.QThread):
         for row in header_content:
             self.csvwriter.writerow(row.split(', '))
 
-        self.csvwriter.writerow([f"Number of ICB-Sensors: {self.num_sensors}", f"Sensor Label(s): {self.sensor_labels}", f"Sensor SNs: {self.sensor_sns}"])
+        self.csvwriter.writerow([f"Number of ICB-Sensors: {self.num_sensors}", f"Sensor Label(s): {' '.join(self.sensor_labels)}", f"Sensor SNs: {' '.join(self.sensor_sns)}"])
 
         for l, sn in zip(self.sensor_labels, self.sensor_sns):
             cal = self.calibrations[l]
@@ -633,8 +633,8 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
 
     def update_plots(self):
         for i in range(self.num_sensors):
-            if i in [1]:
-                continue
+            # if i in [1]:
+            #     continue
             self.curves_force[i].setData(self.times[i], self.forces[i])
             self.curves_pos[i].setData(self.times[i], self.positions[i])
             if self.show_raw_strains:
@@ -723,7 +723,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.ReadWrite.stop()
 
 
-def run_collection(nano_id=[1], sensors=['A B C D E'], sensor_sns=['001,002,003,004,005'], 
+def run_collection(nano_id=[1], sensors=['A B C D E'], sensor_sns=['001 002 003 004 005'], 
                    probe_height_m=[None], header_content=[None], plot=True, show_raw_strains=False):
     """
     Start data collection for one or more Hi-STIFFS probes.
@@ -733,7 +733,7 @@ def run_collection(nano_id=[1], sensors=['A B C D E'], sensor_sns=['001,002,003,
         run_collection(
             nano_id=[1, 2],
             sensors=["A B C D E", "A B C D E"],
-            sensor_sns=["001,002,003,004,005", "101,102,103,104,105"],
+            sensor_sns=["001 002 003 004 005", "101 102 103 104 105"],
             plot=True
         )
 
@@ -766,7 +766,7 @@ def run_collection(nano_id=[1], sensors=['A B C D E'], sensor_sns=['001,002,003,
 
     print(f'Starting collection function for {n} probes')
     for nano_id_i, sensors_i, sensor_sns_i in zip(nano_ids, sensors_list, sensor_sns_list):
-        print(f'Probe ID: {nano_id_i:02d}. Sensor Positions {sensors_i}. Sensor S#s: {sensor_sns_i}')
+        print(f'Probe ID: {nano_id_i:02d}. Sensor Positions {sensors_i}. Sensor S/Ns: {sensor_sns_i}')
 
     # Lock shared timestamp for all probes in this session
     Config.start_new_data_session()
@@ -792,8 +792,7 @@ def run_collection(nano_id=[1], sensors=['A B C D E'], sensor_sns=['001,002,003,
                 sensor_labels = ['A', 'B', 'C', 'D', 'E']
 
         num_sensors = len(sensor_labels)
-        sns_list = [s.strip() for s in str(sensor_sns_list[i]).split(',') if s.strip()]
-        print(sns_list)
+        sns_list = [s.strip() for s in str(sensor_sns_list[i]).split() if s.strip()]
 
         dw = DataReceiverWriter(
             num_sensors=num_sensors,
@@ -836,16 +835,17 @@ if __name__ == "__main__":
     parser.add_argument('--save-format', choices=['volts', 'raw'], default='raw')
     parser.add_argument('--plot', type=bool, default=True)
     parser.add_argument('--sensors', default='A B C D E')
-    parser.add_argument('--sensor-sns', default='001,002,003,004,005')
+    parser.add_argument('--sensor-sns', default='001 002 003 004 005')
     parser.add_argument('--nano-id', type=int, default=1, help="2-digit flashed NANO_ID on the target Arduino")
     parser.add_argument('--show-raw-strains', action='store_true', help="Also create raw strain plot window (higher resource use)")
     args = parser.parse_args()
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: Dummy code tests",
-        "Test Type: Medium Lab w/o tops",
-        "Speed: 50 ft/min, Stalk Spacing: 6in",
+        "Note: new DAQ PCB",
+        "Test Type: Lab Trials",
+        "Stalks: Medium B-IN no tops, Probe: v3.3",
+        # "Loads (N): 5 35 70, Positions (mm): 60 75 95",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_330SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
@@ -855,7 +855,8 @@ if __name__ == "__main__":
     #                 probe_height_m=[0.785, 0.785],
     #                 header_content=[example_header_content, example_header_content])
     run_collection( nano_id=[1],
-                    sensors=["A"],
-                    sensor_sns=["004"],
-                    probe_height_m=[0.785],
-                    header_content=[example_header_content, example_header_content])
+                    sensors=["A C E"],
+                    sensor_sns=["001 003 005"],
+                    probe_height_m=[0.790],
+                    header_content=[example_header_content, example_header_content],
+                    )

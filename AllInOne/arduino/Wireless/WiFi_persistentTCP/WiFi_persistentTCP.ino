@@ -119,10 +119,10 @@
 #define FULL_SCALE (1LL << 23) // 2^23 for 24-bit signed scaling - retained for reference, though not used in raw output
 #define A_DRDY_PIN 9
 #define A_CS_PIN 10
-#define B_DRDY_PIN 8
-#define B_CS_PIN 7
-#define C_DRDY_PIN 6
-#define C_CS_PIN 5
+#define B_DRDY_PIN 7
+#define B_CS_PIN 8
+#define C_DRDY_PIN 5
+#define C_CS_PIN 6
 #define D_DRDY_PIN 4
 #define D_CS_PIN 3
 #define E_DRDY_PIN 2
@@ -133,7 +133,7 @@ const int SPI_MISO = 11;   // default D12 (CIPO)
 const int SPI_MOSI = 12;   // default D11 (COPI)
 
 const int MAX_SENSORS = 5;     // Maximum possible sensors (A to E)
-const int NUM_SENSORS = 1;     // Set to 1-5 to use the first N sensors from all_configs below.
+const int NUM_SENSORS = 3;     // Set to 1-5 to use the first N sensors from all_configs below.
 const uint8_t dr_code = DR_330SPS;  // Data Rate value. In turbo, value is for pairs/sec. In normal, value is for samples/sec
 const SPISettings spi_settings(2000000, MSBFIRST, SPI_MODE1);
 
@@ -241,7 +241,6 @@ void IRAM_ATTR handleDrdyA() {
     timestamps[i] = interrupt_time - time_init;
     ready_mask |= (1 << i);
   }
-  Serial.println(val);
 }
 
 void IRAM_ATTR handleDrdyB() {
