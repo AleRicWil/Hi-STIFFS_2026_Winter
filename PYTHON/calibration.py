@@ -496,8 +496,8 @@ if __name__ == "__main__":
     #              r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163945_01.csv']
     # generate_summary(old_paths)
 
-    path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-06-10\2026-06-10_124831_01.csv'
-    sum_path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-06-10\calibration_005.csv'
+    path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-06-16\2026-06-16_195024_02.csv'
+    sum_path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-06-16\calibration_101.csv'
 
     # zero_shift_correction(path)
     # summary_from_dwells(path)

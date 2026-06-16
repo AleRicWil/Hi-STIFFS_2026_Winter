@@ -133,12 +133,12 @@ const int SPI_MISO = 11;   // default D12 (CIPO)
 const int SPI_MOSI = 12;   // default D11 (COPI)
 
 const int MAX_SENSORS = 5;     // Maximum possible sensors (A to E)
-const int NUM_SENSORS = 3;     // Set to 1-5 to use the first N sensors from all_configs below.
+const int NUM_SENSORS = 1;     // Set to 1-5 to use the first N sensors from all_configs below.
 const uint8_t dr_code = DR_330SPS;  // Data Rate value. In turbo, value is for pairs/sec. In normal, value is for samples/sec
 const SPISettings spi_settings(2000000, MSBFIRST, SPI_MODE1);
 
 // WiFi access point to connect to (host's AP)
-const char* ssid = "Hi-STIFFS_Host";       // Host WiFi network name (SSID) - choose something unique
+const char* ssid "Hi-STIFFS_Hos";       // Host WiFi network name (SSID) - choose something unique
 const char* password = "BYUCropBio";       // Host WiFi password (minimum 8 characters)
 const char* ota_password = "BYUCropBio";   // Optional OTA password for security (change this)
 // Host server details
@@ -148,7 +148,7 @@ const int host_port = 8080;                  // Port on host for data streaming
 WiFiClient client;                         // Global client for sending data to host
 
 // Unique Nano ID (2-digit, e.g., "01" to "99")
-const char* NANO_ID = "01";                // Assign per Nano; for now, fixed to "01"
+const char* NANO_ID = "02";                // Assign per Nano; for now, fixed to "01"
 
 // Batching configuration: Send queued packets every this interval (ms)
 const unsigned long BATCH_SEND_INTERVAL_MS = 10;  // Default 0.1s; adjust for desired batch frequency

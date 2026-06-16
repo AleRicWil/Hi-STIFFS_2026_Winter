@@ -619,8 +619,8 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
                 try:
                     num = (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
                     den = (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
-                    position = num / den if den != 0 and abs(den) > 1e10 else 0.0
-                    position = position if 0.03 <= position <= 0.15 else 0.0
+                    position = num / den if den != 0 and abs(den) > 1e9 else 0.0
+                    position = position if 0.03 <= position <= 0.16 else 0.0
                 except:
                     position = 0.0
                 if time_sec >= self.display_start_time:
@@ -843,20 +843,20 @@ if __name__ == "__main__":
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
         "Note: new DAQ PCB",
-        "Test Type: Lab Trials",
-        "Stalks: Medium B-IN no tops, Probe: v3.3",
-        # "Loads (N): 5 35 70, Positions (mm): 60 75 95",
+        "Test Type: Calibration Verify",
+        # "Stalks: Medium B-IN no tops, Probe: v3.3",
+        # "Loads (N): 5 35 70, Positions (mm): 60 100 120 154",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_330SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
+    run_collection( nano_id=[2],
+                    sensors=["A"],
+                    sensor_sns=["101"],
+                    probe_height_m=[0.785],
+                    header_content=[example_header_content])
     # run_collection( nano_id=[1, 2],
-    #                 sensors=["A B C D E", "A B C D E"],
-    #                 sensor_sns=["001,002,003,004,005", "011,012,013,014,015"],
-    #                 probe_height_m=[0.785, 0.785],
-    #                 header_content=[example_header_content, example_header_content])
-    run_collection( nano_id=[1],
-                    sensors=["A C E"],
-                    sensor_sns=["001 003 005"],
-                    probe_height_m=[0.790],
-                    header_content=[example_header_content, example_header_content],
-                    )
+    #                 sensors=["A C E", "A C E"],
+    #                 sensor_sns=["001 003 005", "002 004 011"],
+    #                 probe_height_m=[0.790, 0.790],
+    #                 header_content=[example_header_content, example_header_content],
+    #                 )
