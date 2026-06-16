@@ -123,8 +123,8 @@
 #define B_CS_PIN 8
 #define C_DRDY_PIN 5
 #define C_CS_PIN 6
-#define D_DRDY_PIN 4
-#define D_CS_PIN 3
+#define D_DRDY_PIN 3
+#define D_CS_PIN 4
 #define E_DRDY_PIN 2
 #define E_CS_PIN A6
 
