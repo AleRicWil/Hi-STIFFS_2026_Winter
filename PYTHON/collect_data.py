@@ -849,7 +849,7 @@ if __name__ == "__main__":
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_330SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
-    run_collection( nano_id=[2],
+    run_collection( nano_id=[1],
                     sensors=["A"],
                     sensor_sns=["101"],
                     probe_height_m=[0.785],
