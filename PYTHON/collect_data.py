@@ -54,19 +54,6 @@ SCREEN_SCALE = 1.3
 SCREEN_WIDTH = int(1920 * SCREEN_SCALE)
 SCREEN_HEIGHT = int(1080 * SCREEN_SCALE)
 
-# === NavX2 packet schema ===
-NAVX2_BINARY_FMT = '<BIIhhhHHhhhhhhhiiiHHBB'
-NAVX2_BINARY_BYTES = struct.calcsize(NAVX2_BINARY_FMT)
-NAVX2_CSV_HEADERS = [
-    'NavX2_Flags_raw', 'NavX2_Valid', 'NavX2_Fresh', 'NavX2_Timestamp_us',
-    'NavX2_NavX_Timestamp_ms', 'NavX2_Yaw_deg', 'NavX2_Pitch_deg', 'NavX2_Roll_deg',
-    'NavX2_Heading_deg', 'NavX2_Fused_Heading_deg',
-    'NavX2_Accel_X_g', 'NavX2_Accel_Y_g', 'NavX2_Accel_Z_g',
-    'NavX2_Quat_W', 'NavX2_Quat_X', 'NavX2_Quat_Y', 'NavX2_Quat_Z',
-    'NavX2_Disp_X_m', 'NavX2_Disp_Y_m', 'NavX2_Disp_Z_m',
-    'NavX2_Sensor_Status', 'NavX2_Capability_Flags', 'NavX2_Cal_Status', 'NavX2_Selftest_Status',
-]
-
 
 class WiFiDataServer(QtCore.QObject):
     """
@@ -261,7 +248,7 @@ class DataReceiverWriter(QtCore.QThread):
         data_headers = []
         for l in self.sensor_labels:
             data_headers += [f'Time_{l}_sec', f'Strain_{l}1_raw', f'Strain_{l}2_raw']
-        data_headers += NAVX2_CSV_HEADERS + ['Processed_Time']
+        data_headers += ['Processed_Time']
         self.csvwriter.writerow(data_headers)
         print(f"[DataReceiverWriter Nano_{self.nano_id:02d}] Added metadata and headers to CSV")
 
@@ -285,6 +272,7 @@ class DataReceiverWriter(QtCore.QThread):
         self.initial_strains2 = [[] for _ in range(self.num_sensors)]
         self.cal_duration = 1.0
         self.min_samples = 150
+        self.last_t = 0.0
 
     def run(self):
         """QThread main loop — keeps the thread alive for Qt signals while processing happens in background thread."""
@@ -304,121 +292,114 @@ class DataReceiverWriter(QtCore.QThread):
         if DataReceiverWriter._shared_server:
             DataReceiverWriter._shared_server.unregister_probe(self.nano_id)
 
-    def decode_navx2_payload(self, navx_payload):
-        if len(navx_payload) != NAVX2_BINARY_BYTES:
-            raise ValueError("Invalid NavX2 payload length")
-        unpacked = struct.unpack(NAVX2_BINARY_FMT, navx_payload)
-        flags = unpacked[0]
-        return {
-            'NavX2_Flags_raw': flags,
-            'NavX2_Valid': flags & 0x01,
-            'NavX2_Fresh': (flags >> 1) & 0x01,
-            'NavX2_Timestamp_us': unpacked[1],
-            'NavX2_NavX_Timestamp_ms': unpacked[2],
-            'NavX2_Yaw_deg': unpacked[3] / 100.0,
-            'NavX2_Pitch_deg': unpacked[4] / 100.0,
-            'NavX2_Roll_deg': unpacked[5] / 100.0,
-            'NavX2_Heading_deg': unpacked[6] / 100.0,
-            'NavX2_Fused_Heading_deg': unpacked[7] / 100.0,
-            'NavX2_Accel_X_g': unpacked[8] / 1000.0,
-            'NavX2_Accel_Y_g': unpacked[9] / 1000.0,
-            'NavX2_Accel_Z_g': unpacked[10] / 1000.0,
-            'NavX2_Quat_W': unpacked[11] / 16384.0,
-            'NavX2_Quat_X': unpacked[12] / 16384.0,
-            'NavX2_Quat_Y': unpacked[13] / 16384.0,
-            'NavX2_Quat_Z': unpacked[14] / 16384.0,
-            'NavX2_Disp_X_m': unpacked[15] / 65536.0,
-            'NavX2_Disp_Y_m': unpacked[16] / 65536.0,
-            'NavX2_Disp_Z_m': unpacked[17] / 65536.0,
-            'NavX2_Sensor_Status': unpacked[18],
-            'NavX2_Capability_Flags': unpacked[19],
-            'NavX2_Cal_Status': unpacked[20],
-            'NavX2_Selftest_Status': unpacked[21],
-        }
-
-    def build_navx2_csv_row(self, navx_data=None):
-        if navx_data is None:
-            return [''] * len(NAVX2_CSV_HEADERS)
-        return [navx_data[field] for field in NAVX2_CSV_HEADERS]
-
     def process_batches(self):
-        """Per-probe processing thread (token-bucket smoothed emit at ~PROCESS_FPS)."""
-        interval_sec = 1.0 / PROCESS_FPS
-        next_time = time.perf_counter() + interval_sec
-        credits = 0.0
+        """Per-probe processing thread.
 
+        Drains the receive_queue as fast as packets arrive, validates and unpacks
+        binary sensor payloads from the Nano, writes timestamped rows to CSV,
+        and immediately emits the entire processed batch via data_ready signal.
+        No rate limiting or PROCESS_FPS pacing is applied; every packet processed
+        in a cycle is emitted together in one flat list for lowest latency and
+        simplest behavior.
+        """
         while self.running:
-            batch_rows = []
+            batch_rows = []          # CSV rows accumulated during this drain cycle
+
+            # ------------------------------------------------------------
+            # Drain and process every packet currently available in the queue
+            # ------------------------------------------------------------
             while not self.receive_queue.empty():
                 post_data = self.receive_queue.get()
-                legacy_len = 1 + self.num_sensors * 12
-                extended_len = legacy_len + NAVX2_BINARY_BYTES
-                navx_payload = None
-                if len(post_data) == legacy_len:
+
+                # Expected payload length = 1 byte (probe_id) + 12 bytes per sensor
+                # (4 bytes time_us + 4 bytes raw1 + 4 bytes raw2)
+                expected_len = 1 + self.num_sensors * 12
+                if len(post_data) == expected_len:
                     sensor_payload = post_data
-                elif len(post_data) == extended_len:
-                    sensor_payload = post_data[:legacy_len]
-                    navx_payload = post_data[legacy_len:]
                 else:
                     self.status_signal.emit(f"Invalid packet length for Nano_{self.nano_id:02d}")
                     continue
 
+                # Binary format: unsigned byte probe_id followed by
+                # (unsigned int time_us, signed int raw1, signed int raw2) per sensor
                 fmt = '<B' + 'Iii' * self.num_sensors
                 try:
                     unpacked = struct.unpack(fmt, sensor_payload)
                     probe_id = unpacked[0]
                     if probe_id != self.nano_id:
                         continue
+
+                    # Slice the unpacked tuple into per-sensor lists
                     times_us = unpacked[1::3]
-                    raws1 = unpacked[2::3]
-                    raws2 = unpacked[3::3]
+                    raws1    = unpacked[2::3]
+                    raws2    = unpacked[3::3]
+
+                    # Convert microsecond timestamps to floating-point seconds
                     times = [ts / 1000000.0 for ts in times_us]
-                    navx_data = self.decode_navx2_payload(navx_payload) if navx_payload is not None else None
+                    # ------------------------------------------------------------------
+                    # Online data-rate estimate using EMA of inter-arrival delta
+                    # (sensor 0 timestamp).  Smoother than raw 1/(t_now - t_prev)
+                    # while remaining O(1) and allocation-free.
+                    # Requires two floats initialized once in __init__:
+                    #     self.last_t = None
+                    #     self.ema_delta = None
+                    # ------------------------------------------------------------------
+                    t_now = times[0]
+                    delta = t_now - self.last_t 
+                    self.rate_estimate = 1.0 / delta if delta > 1e-9 else 0.0 # guard against duplicates / wrap-around
+                    self.last_t = t_now
                 except Exception:
+                    # Corrupt or truncated packet – skip silently
+                    print('Error processing batch of packets')
                     continue
 
-                self.collected_first_times.append(times[0])
                 now = datetime.datetime.now()
+
+                # --------------------------------------------------------
+                # Build one CSV row per received packet:
+                # [time0, raw1_0, raw2_0, time1, raw1_1, raw2_1, ..., wall-clock time]
+                # --------------------------------------------------------
                 row = []
                 for j in range(self.num_sensors):
                     row += [f"{times[j]:.6f}", f"{raws1[j]:+08d}", f"{raws2[j]:+08d}"]
-                row += self.build_navx2_csv_row(navx_data)
                 row += [now.time()]
                 batch_rows.append(row)
 
+                # --------------------------------------------------------
+                # Build the corresponding emit payload for this packet:
+                # flat list [t0, r0_1, r0_2, t1, r1_1, r1_2, ...] for all sensors
+                # --------------------------------------------------------
                 emit_list = []
                 for j in range(self.num_sensors):
                     emit_list += [times[j], raws1[j], raws2[j]]
                 self.processed_buffer.append(emit_list)
 
+            # ------------------------------------------------------------
+            # Write any newly processed rows to CSV and flush immediately
+            # ------------------------------------------------------------
             if batch_rows:
                 self.csvwriter.writerows(batch_rows)
                 self.csvfile.flush()
 
-            # Rate estimation (same as original)
-            if time.perf_counter() - self.last_rate_update > 1.0 and len(self.collected_first_times) > 10:
-                deltas = [self.collected_first_times[i+1] - self.collected_first_times[i]
-                          for i in range(len(self.collected_first_times)-1)]
-                avg_delta = sum(deltas) / len(deltas) if deltas else 0.1
-                self.rate_estimate = 1.0 / avg_delta if avg_delta > 0 else 10.0
-                self.collected_first_times = self.collected_first_times[-10:]
-                self.last_rate_update = time.perf_counter()
-
-            credits += self.rate_estimate * interval_sec
-            to_emit = int(credits)
-            credits -= to_emit
-            if to_emit > 0:
+            # ------------------------------------------------------------
+            # Emit the COMPLETE processed batch in a single signal emission.
+            # This replaces the former token-bucket logic that emitted only
+            # a rate-limited subset of the buffer at each PROCESS_FPS tick.
+            # ------------------------------------------------------------
+            if self.processed_buffer:
                 batch_emit_lists = []
-                actual = min(to_emit, len(self.processed_buffer))
-                for _ in range(actual):
+                # Drain every item currently in the buffer
+                while self.processed_buffer:
                     batch_emit_lists.append(self.processed_buffer.popleft())
+
                 if batch_emit_lists:
+                    # Flatten list-of-lists into one contiguous list for the signal
                     flat = [item for sub in batch_emit_lists for item in sub]
                     self.data_ready.emit(flat)
+                    self.rate_updated.emit(self.rate_estimate)
 
-            sleep_dur = max(0, next_time - time.perf_counter())
-            time.sleep(sleep_dur)
-            next_time += interval_sec
+            # Small sleep prevents 100 % CPU usage when the receive queue is idle.
+            time.sleep(0.002)
 
 
 class RealTimePlotWindow(QtWidgets.QMainWindow):
@@ -640,6 +621,8 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
             if self.show_raw_strains:
                 self.curves_ch1[i].setData(self.times[i], self.strains1[i])
                 self.curves_ch2[i].setData(self.times[i], self.strains2[i])
+        
+        
         t_max = 0
         for t in self.times:
             if t:
@@ -759,14 +742,14 @@ def run_collection(nano_id=[1], sensors=['A B C'], sensor_sns=['001 002 003'],
             return (list(val) + [default] * (n - len(val)))[:n]
         return [val] * n
 
-    sensors_list    = expand(sensors, 'A B C D E')
-    sensor_sns_list = expand(sensor_sns, '001,002,003,004,005')
+    sensors_list    = expand(sensors, 'A B C')
+    sensor_sns_list = expand(sensor_sns, '001 002 003')
     header_list     = expand(header_content, None)
     show_raw_list   = expand(show_raw_strains, False)
 
-    print(f'Starting collection function for {n} probes')
+    print(f'Starting run_collection function for {n} Hi-STIFFS probes')
     for nano_id_i, sensors_i, sensor_sns_i in zip(nano_ids, sensors_list, sensor_sns_list):
-        print(f'Probe ID: {nano_id_i:02d}. Sensor Positions {sensors_i}. Sensor S/Ns: {sensor_sns_i}')
+        print(f'Probe ID: {nano_id_i:02d}. Sensor Labels {sensors_i}. Sensor S/Ns: {sensor_sns_i}')
 
     # Lock shared timestamp for all probes in this session
     Config.start_new_data_session()
@@ -780,16 +763,9 @@ def run_collection(nano_id=[1], sensors=['A B C'], sensor_sns=['001 002 003'],
         sens_str = sensors_list[i]
 
         # Parse sensors string for this probe
-        if str(sens_str).strip().isdigit():
-            num = int(sens_str)
-            if num < 1 or num > 5:
-                num = 5
-            sensor_labels = [chr(65 + j) for j in range(num)]
-        else:
-            sensor_labels = sorted(set(s.strip().upper() for s in str(sens_str).split()),
-                                   key=Config.ALLOWED_LABELS.index)
-            if not sensor_labels or any(s not in Config.ALLOWED_LABELS for s in sensor_labels):
-                sensor_labels = ['A', 'B', 'C']
+        sensor_labels = [s.strip().upper() for s in str(sens_str).split()]
+        if not sensor_labels or any(s not in Config.ALLOWED_LABELS for s in sensor_labels):
+            raise ValueError(f'A sensor label (received {sensor_labels}) is not part of the allowed set. Only "{Config.ALLOWED_LABELS}" allowed')
 
         num_sensors = len(sensor_labels)
         sns_list = [s.strip() for s in str(sensor_sns_list[i]).split() if s.strip()]
@@ -832,10 +808,9 @@ def run_collection(nano_id=[1], sensors=['A B C'], sensor_sns=['001 002 003'],
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Multi-probe Hi-STIFFS data collection")
-    parser.add_argument('--save-format', choices=['volts', 'raw'], default='raw')
     parser.add_argument('--plot', type=bool, default=True)
-    parser.add_argument('--sensors', default='A B C D E')
-    parser.add_argument('--sensor-sns', default='001 002 003 004 005')
+    parser.add_argument('--sensors', default='A B C')
+    parser.add_argument('--sensor-sns', default='001 002 003')
     parser.add_argument('--nano-id', type=int, default=1, help="2-digit flashed NANO_ID on the target Arduino")
     parser.add_argument('--show-raw-strains', action='store_true', help="Also create raw strain plot window (higher resource use)")
     args = parser.parse_args()
@@ -854,7 +829,7 @@ if __name__ == "__main__":
                     sensor_sns=["001 003 005 002 004 101"],
                     probe_height_m=[0.785],
                     header_content=[example_header_content],
-                    show_raw_strains=True)
+                    show_raw_strains=False)
     # run_collection( nano_id=[1, 2],
     #                 sensors=["A C E", "A C E"],
     #                 sensor_sns=["001 003 005", "002 004 011"],

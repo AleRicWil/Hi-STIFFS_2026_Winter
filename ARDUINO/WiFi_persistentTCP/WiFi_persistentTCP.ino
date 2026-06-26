@@ -154,7 +154,7 @@ WiFiClient client;                         // Global client for sending data to 
 const char* NANO_ID = "01";                // Assign per Nano; for now, fixed to "01"
 
 // Batching configuration: Send queued packets every this interval (ms)
-const unsigned long BATCH_SEND_INTERVAL_MS = 10;  // Default 0.1s; adjust for desired batch frequency
+const unsigned long BATCH_SEND_INTERVAL_MS = 50;  // Default 0.1s; adjust for desired batch frequency
 
 struct SensorConfig {
   char id;                     // Sensor ID ('A', 'B', etc.)
