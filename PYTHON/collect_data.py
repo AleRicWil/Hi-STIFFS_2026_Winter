@@ -207,7 +207,7 @@ class DataReceiverWriter(QtCore.QThread):
 
     _shared_server = None   # class-level shared server (created by the first DataReceiverWriter)
 
-    def __init__(self, num_sensors, sensor_labels=['A', 'B', 'C', 'D', 'E'], sensor_sns=None,
+    def __init__(self, num_sensors, sensor_labels=['A', 'B', 'C'], sensor_sns=None,
                  header_content=None, registry=None, nano_id=1, probe_height_m=None, show_raw_strains=False):
         super().__init__()
 
@@ -477,7 +477,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.plot_pos.setLabel('left', '', units='mm')
         self.plot_pos.addLegend()
 
-        colors = ['r', 'g', 'c', 'y', 'm'][:self.num_sensors]
+        colors = Config.COLORS[:self.num_sensors]
         self.curves_force = []
         self.curves_pos = []
         for i, s in enumerate(self.sensor_labels):
@@ -723,7 +723,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
         self.ReadWrite.stop()
 
 
-def run_collection(nano_id=[1], sensors=['A B C D E'], sensor_sns=['001 002 003 004 005'], 
+def run_collection(nano_id=[1], sensors=['A B C'], sensor_sns=['001 002 003'], 
                    probe_height_m=[None], header_content=[None], plot=True, show_raw_strains=False):
     """
     Start data collection for one or more Hi-STIFFS probes.
@@ -787,9 +787,9 @@ def run_collection(nano_id=[1], sensors=['A B C D E'], sensor_sns=['001 002 003 
             sensor_labels = [chr(65 + j) for j in range(num)]
         else:
             sensor_labels = sorted(set(s.strip().upper() for s in str(sens_str).split()),
-                                   key='ABCDE'.index)
-            if not sensor_labels or any(s not in 'ABCDE' for s in sensor_labels):
-                sensor_labels = ['A', 'B', 'C', 'D', 'E']
+                                   key=Config.ALLOWED_LABELS.index)
+            if not sensor_labels or any(s not in Config.ALLOWED_LABELS for s in sensor_labels):
+                sensor_labels = ['A', 'B', 'C']
 
         num_sensors = len(sensor_labels)
         sns_list = [s.strip() for s in str(sensor_sns_list[i]).split() if s.strip()]
@@ -850,10 +850,11 @@ if __name__ == "__main__":
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
     run_collection( nano_id=[1],
-                    sensors=["A"],
-                    sensor_sns=["101"],
+                    sensors=["A B C D E F"],
+                    sensor_sns=["001 003 005 002 004 101"],
                     probe_height_m=[0.785],
-                    header_content=[example_header_content])
+                    header_content=[example_header_content],
+                    show_raw_strains=True)
     # run_collection( nano_id=[1, 2],
     #                 sensors=["A C E", "A C E"],
     #                 sensor_sns=["001 003 005", "002 004 011"],

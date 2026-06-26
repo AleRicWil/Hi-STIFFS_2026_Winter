@@ -29,6 +29,12 @@ class Config:
     HOST_IP   = "192.168.137.1"      # change via GUI if needed
     HOST_PORT = 8080
 
+    # Plotting colors for each sensor's trace or data
+    COLORS = ['r', 'g', 'b', 'c', 'y', 'm']
+
+    # List of possible sensor labels (single characters)
+    ALLOWED_LABELS = 'ABCDEF'
+
     @classmethod
     def set_base_dir(cls, new_path: str):
         """GUI calls this once at startup to point everything to the correct folder.

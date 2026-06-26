@@ -117,28 +117,31 @@
 #include <vector>       // For storing binary packet data
 
 #define FULL_SCALE (1LL << 23) // 2^23 for 24-bit signed scaling - retained for reference, though not used in raw output
-#define A_DRDY_PIN 9
 #define A_CS_PIN 10
-#define B_DRDY_PIN 7
+#define A_DRDY_PIN 9
 #define B_CS_PIN 8
-#define C_DRDY_PIN 5
+#define B_DRDY_PIN 7
 #define C_CS_PIN 6
-#define D_DRDY_PIN 3
+#define C_DRDY_PIN 5
+
 #define D_CS_PIN 4
-#define E_DRDY_PIN 2
-#define E_CS_PIN A6
+#define D_DRDY_PIN 3
+#define E_CS_PIN 2
+#define E_DRDY_PIN A1
+#define F_CS_PIN A2
+#define F_DRDY_PIN A3
 
 const int SPI_SCK  = 13;   // default D13
 const int SPI_MISO = 11;   // default D12 (CIPO)
 const int SPI_MOSI = 12;   // default D11 (COPI)
 
-const int MAX_SENSORS = 5;     // Maximum possible sensors (A to E)
-const int NUM_SENSORS = 1;     // Set to 1-5 to use the first N sensors from all_configs below.
+const int MAX_SENSORS = 6;     // Maximum possible sensors (A to E)
+const int NUM_SENSORS = 6;     // Set to 1-5 to use the first N sensors from all_configs below.
 const uint8_t dr_code = DR_330SPS;  // Data Rate value. In turbo, value is for pairs/sec. In normal, value is for samples/sec
 const SPISettings spi_settings(2000000, MSBFIRST, SPI_MODE1);
 
 // WiFi access point to connect to (host's AP)
-const char* ssid "Hi-STIFFS_Hos";       // Host WiFi network name (SSID) - choose something unique
+const char* ssid = "Hi-STIFFS_Host";       // Host WiFi network name (SSID) - choose something unique
 const char* password = "BYUCropBio";       // Host WiFi password (minimum 8 characters)
 const char* ota_password = "BYUCropBio";   // Optional OTA password for security (change this)
 // Host server details
@@ -148,7 +151,7 @@ const int host_port = 8080;                  // Port on host for data streaming
 WiFiClient client;                         // Global client for sending data to host
 
 // Unique Nano ID (2-digit, e.g., "01" to "99")
-const char* NANO_ID = "02";                // Assign per Nano; for now, fixed to "01"
+const char* NANO_ID = "01";                // Assign per Nano; for now, fixed to "01"
 
 // Batching configuration: Send queued packets every this interval (ms)
 const unsigned long BATCH_SEND_INTERVAL_MS = 10;  // Default 0.1s; adjust for desired batch frequency
@@ -166,7 +169,8 @@ SensorConfig all_configs[MAX_SENSORS] = {
   {'B', B_CS_PIN, B_DRDY_PIN},
   {'C', C_CS_PIN, C_DRDY_PIN},
   {'D', D_CS_PIN, D_DRDY_PIN},
-  {'E', E_CS_PIN, E_DRDY_PIN}
+  {'E', E_CS_PIN, E_DRDY_PIN},
+  {'F', F_CS_PIN, F_DRDY_PIN}
 };
 
 Protocentral_ADS1220 adcs[MAX_SENSORS];             // ADC objects from library
@@ -367,6 +371,37 @@ void IRAM_ATTR handleDrdyE() {
   }
 }
 
+void IRAM_ATTR handleDrdyF() {
+  const int i = 5;
+  unsigned long interrupt_time = micros();
+  SPI.beginTransaction(spi_settings);
+  digitalWrite(F_CS_PIN, LOW);
+  delayMicroseconds(1);
+  byte SPI_Buf[3];
+  SPI_Buf[0] = SPI.transfer(0);
+  SPI_Buf[1] = SPI.transfer(0);
+  SPI_Buf[2] = SPI.transfer(0);
+  delayMicroseconds(1);
+  digitalWrite(F_CS_PIN, HIGH);
+  SPI.endTransaction();
+
+  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2];
+  int32_t val = (bits24 << 8) >> 8;
+
+  if (current_channels[i] == 0) {
+    raw_values[i][0] = val;
+    adcs[i].select_mux_channels(MUX_AIN2_AIN3);
+    current_channels[i] = 1;
+  } 
+  else {
+    raw_values[i][1] = val;
+    adcs[i].select_mux_channels(MUX_AIN0_AIN1);
+    current_channels[i] = 0;
+    timestamps[i] = interrupt_time - time_init;
+    ready_mask |= (1 << i);
+  }
+}
+
 // Broadcast a command to all active sensors
 void broadcast_command(uint8_t cmd) {
   // Lower all CS pins for the active sensors to broadcast the command to all chips.
@@ -390,7 +425,7 @@ void disableADCInterrupts() {
 
 // Enable interrupts for sensor DRDY pins
 void enableADCInterrupts() {
-  void (*isrHandlers[5])() = {handleDrdyA, handleDrdyB, handleDrdyC, handleDrdyD, handleDrdyE};
+  void (*isrHandlers[MAX_SENSORS])() = {handleDrdyA, handleDrdyB, handleDrdyC, handleDrdyD, handleDrdyE, handleDrdyF};
   for (int i = 0; i < NUM_SENSORS; i++) {
     attachInterrupt(digitalPinToInterrupt(all_configs[i].drdy_pin), isrHandlers[i], FALLING);
   }
@@ -429,7 +464,7 @@ void initializeADCs() {
   // Allow settling
   delay(100);               
 
-  // Staggered START: Evenly space within one conversion cycle, assuming 5 sensors max
+  // Staggered START: Evenly space within one conversion cycle
   uint16_t turbo_sps = 0;
   switch (dr_code) {
     case DR_20SPS: turbo_sps = 40; break;
@@ -440,11 +475,11 @@ void initializeADCs() {
     case DR_600SPS: turbo_sps = 1200; break;
     case DR_1000SPS: turbo_sps = 2000; break;
     default: 
-      if (hasSerial) Serial.println("Invalid DR code; using default 180 SPS");
+      if (hasSerial) Serial.println("Invalid DR (data rate) code; using default 180 SPS");
       turbo_sps = 180;
   }
   unsigned long period_us = 1000000UL / turbo_sps;  // Conversion period in µs
-  unsigned long stagger_us = period_us / 5;  // Step for 5 sensors
+  unsigned long stagger_us = period_us / NUM_SENSORS;  // time delay for n sensors
 
   for (int i = 0; i < NUM_SENSORS; i++) {
     adcs[i].Start_Conv();
@@ -454,9 +489,9 @@ void initializeADCs() {
   }
 
   // Set time=0 for datastream after letting ADS1220 modules stabilize
-  enableADCInterrupts();
   delay(50);
   time_init = micros();
+  enableADCInterrupts();
 }
 
 // Handle OTA updates (called only in non-CONNECTED states)
@@ -648,7 +683,7 @@ void setup() {
   }
   hasSerial = Serial;  // Set flag based on connection
   if (hasSerial) {
-    Serial.println(" "); 
+    Serial.println(" "); Serial.println(" "); Serial.println(" "); 
     Serial.println("Serial connected for debugging");
     Serial.print("Nano_ID: ");
     Serial.println(NANO_ID);
@@ -704,7 +739,6 @@ void setup() {
 }
 
 void loop() {
-
   // State-specific actions
   switch (SerialState) {
     case NO_SERIAL: { // Do nothing with the serial port

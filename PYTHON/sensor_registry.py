@@ -48,9 +48,10 @@ class SensorRegistry:
 
     def get_coeffs(self, identifier):
         """identifier = label ('A') or SN ('001' or 1). Returns dict with datetime + k1..c2."""
-        if isinstance(identifier, str) and len(identifier) <= 2 and identifier.upper() in 'ABCDE':
+        if isinstance(identifier, str) and len(identifier) <= 2 and identifier.upper() in Config.ALLOWED_LABELS:
             sn = self.label_to_sn.get(identifier.upper())
             if sn is None:
+                print(f'[SensorRegistry] Unable to retrieve calibration for sensor {sn}. Using defaults.')
                 return self._default_coeffs()
             identifier = sn
         sn = str(identifier).zfill(3)
