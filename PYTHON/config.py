@@ -28,6 +28,8 @@ class Config:
     # Network / hardware constants (still cross-platform — pure Python)
     HOST_IP   = "192.168.137.1"      # change via GUI if needed
     HOST_PORT = 8080
+    SENSOR_TYPE_ICB = int(0)
+    SENSOR_TYPE_IMU_MAG = int(1)
 
     # Plotting colors for each sensor's trace or data
     COLORS = ['r', 'g', 'b', 'c', 'y', 'm']
@@ -99,3 +101,21 @@ class Config:
         nid = f"{int(nano_id):02d}"
         full_path = cls.RAW_DATA_BASE / date_str / f"{date_str}_{time_str}_{nid}{extension}"
         return full_path, date_str, time_str
+    
+    @classmethod
+    def get_sensor_payload_length(cls, sensor_type: int, num_icb_sensors: int=0):
+        '''
+        returns the data payload length for each type of incoming packet.
+        for ICB sensors, required to know the number of ICB sensors.
+        IMU/MAG senors always has same length
+        '''
+
+        if sensor_type == Config.SENSOR_TYPE_ICB:
+            # 1 byte (probe_id) + 1 byte (sensor_type) + 12 bytes per sensor
+            # (4 bytes time_us {uses uint32} + 4 bytes raw1 + 4 bytes raw2)
+            return 2 + num_icb_sensors * 12
+        
+        elif sensor_type == Config.SENSOR_TYPE_IMU_MAG:
+            # 1 byte (probe_id) + 1 byte (sensor_type) + 8 bytes (time_us) {uses uint64}
+            # 9*[2 bytes] (int16 for each of 9 DOFs)
+            return 2 + 8 + 9*2

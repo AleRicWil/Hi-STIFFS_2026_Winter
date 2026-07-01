@@ -136,7 +136,7 @@ const int SPI_MISO = 11;   // default D12 (CIPO)
 const int SPI_MOSI = 12;   // default D11 (COPI)
 
 const int MAX_SENSORS = 6;     // Maximum possible sensors (A to E)
-const int NUM_SENSORS = 6;     // Set to 1-5 to use the first N sensors from all_configs below.
+const int NUM_SENSORS = 3;     // Set to 1-5 to use the first N sensors from all_configs below.
 const uint8_t dr_code = DR_330SPS;  // Data Rate value. In turbo, value is for pairs/sec. In normal, value is for samples/sec
 const SPISettings spi_settings(2000000, MSBFIRST, SPI_MODE1);
 
@@ -148,6 +148,8 @@ const char* ota_password = "BYUCropBio";   // Optional OTA password for security
 // const char* host_ip = "192.168.137.1";       // IPv4 of the host server (e.g., Raspberry Pi or laptop), from device settings, not Python code
 const char* host_ip = "192.168.137.1";    // For Pi_001
 const int host_port = 8080;                  // Port on host for data streaming
+const unsigned long WiFi_CHECK_INTERVAL_MS = 1000;  // 1 Hz
+const unsigned long WiFi_RETRY_DELAY_MS = 5000;     // Retry connection every 5s if failed
 WiFiClient client;                         // Global client for sending data to host
 
 // Unique Nano ID (2-digit, e.g., "01" to "99")
@@ -156,7 +158,12 @@ const char* NANO_ID = "01";                // Assign per Nano; for now, fixed to
 // Batching configuration: Send queued packets every this interval (ms)
 const unsigned long BATCH_SEND_INTERVAL_MS = 50;  // Default 0.1s; adjust for desired batch frequency
 
-struct SensorConfig {
+enum class SensorDataType : uint8_t {
+    TYPE_ICB   = 0,   // Added to packet payload to indicate it contains ICB sensor data
+    TYPE_IMU_MAG = 1  // Added to packet payload to indicate it contains IMU/MAG sensor data
+};
+
+struct SensorConfig_ICB {
   char id;                     // Sensor ID ('A', 'B', etc.)
   int cs_pin;                  // Chip Select pin
   int drdy_pin;                // Data Ready pin
@@ -164,7 +171,7 @@ struct SensorConfig {
 
 // Full list of configurations for sensors A to E. The code uses only the first NUM_SENSORS.
 // To change pins or IDs, edit this array. No commenting out needed - just set NUM_SENSORS.
-SensorConfig all_configs[MAX_SENSORS] = {
+SensorConfig_ICB all_configs[MAX_SENSORS] = {
   {'A', A_CS_PIN, A_DRDY_PIN},
   {'B', B_CS_PIN, B_DRDY_PIN},
   {'C', C_CS_PIN, C_DRDY_PIN},
@@ -178,9 +185,7 @@ int32_t raw_values[MAX_SENSORS][2];                 // [sensor][channel]: raw 24
 unsigned long timestamps[MAX_SENSORS];              // Per-chip timestamps for each pair
 uint8_t current_channels[MAX_SENSORS] = {0};        // Indicates which MUX channel to read from for an ADS1220 module
 volatile uint8_t ready_mask = 0;                    // Bitmask tracking ready sensors (bit i set to (1) when sensor i pair is complete)
-unsigned long time_init;                            // t=0 of datastream. Set each time connection initiates datastream
-const unsigned long WiFi_CHECK_INTERVAL_MS = 1000;  // 1 Hz
-const unsigned long WiFi_RETRY_DELAY_MS = 5000;     // Retry connection every 5s if failed
+unsigned long time_init;                            // t=0 of datastream. Reset each time WiFi connection initiates datastream
 
 // Packet queue for batching: Stores binary packets ready to send
 std::deque<std::vector<uint8_t>> packet_queue;      // Queue of binary packets (each vector is one full sensor set)
@@ -509,10 +514,16 @@ bool checkDataReady() {
   return false;
 }
 
-// Build a binary packet from current data and add to queue
-void queueDataPacket() {
-  // Calculate packet payload length: 1 byte ID + sensors * (4 ts + 4 raw1 + 4 raw2)
-  size_t payload_len = 1 + NUM_SENSORS * 12;
+// Build a binary packet from current data and add to queue. Only for ICB sensors
+void queueDataPacket_ICB() {
+  // A packet is composed of overhead and data 
+  // overhead - (length + seqeunce number + cyclic redundancy check) 
+  //          - these bytes help identify the packet to the communication stream
+  // data     - (payload)
+  //          - these bytes tell what Nano sent the packet, what type of data it is, and the data itself
+  
+  // Calculate packet payload length: 1 byte nano_ID + 1 byte sensor_type + num_sensors * (4 ts + 4 raw1 + 4 raw2)
+  size_t payload_len = 2 + NUM_SENSORS * 12;
 
   // Build payload separately
   std::vector<uint8_t> payload;
@@ -521,6 +532,10 @@ void queueDataPacket() {
   // Add nano_id as uint8_t
   uint8_t nano_id = atoi(NANO_ID);
   payload.push_back(nano_id);
+
+  // Add sensor_type as uint8_t
+  uint8_t sensor_type = static_cast<uint8_t>(SensorDataType::TYPE_ICB);
+  payload.push_back(sensor_type);
 
   // Per sensor: uint32_t ts_us, int32_t raw1, int32_t raw2
   for (int i = 0; i < NUM_SENSORS; i++) {
@@ -746,7 +761,7 @@ void loop() {
       switch (WiFiState) {
         case CONNECTED: {
           if (checkDataReady()) {
-            queueDataPacket();  // Build and queue binary packet
+            queueDataPacket_ICB();  // Build and queue binary packet
           }
           // Check if time to send batch
           unsigned long now = millis();
@@ -770,7 +785,7 @@ void loop() {
       switch (WiFiState) {
         case CONNECTED: { // Connected, do not allow OTA updates and send datastream to host 
           if (checkDataReady()) {
-            queueDataPacket();  // Build and queue binary packet
+            queueDataPacket_ICB();  // Build and queue binary packet
             sendDataSerial();   // Also send over serial for debugging
           }
           // Check if time to send batch
