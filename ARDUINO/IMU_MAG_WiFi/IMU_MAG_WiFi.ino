@@ -127,10 +127,19 @@ struct __attribute__((packed)) IMUPacket {
 };
 
 // Packet queue for batching: Stores binary packets ready to send
-std::deque<std::vector<uint8_t>> packet_queue;      // Queue of binary packets (each vector is one full sensor set)
 uint16_t seq_num = 0;                               // Sequence number for packets, increments per packet
 unsigned long last_batch_send = 0;                  // Timestamp of last batch send
 uint64_t time_init = esp_timer_get_time();                            // t=0 of datastream. Reset each time WiFi connection initiates datastream
+
+const size_t HEADER_SIZE_IMU   = 6;
+const size_t PAYLOAD_SIZE_IMU  = 2 + sizeof(uint64_t) + 9 * sizeof(int16_t); // 28
+const size_t PACKET_SIZE_IMU = HEADER_SIZE_IMU + PAYLOAD_SIZE_IMU;     // 6-byte header + 28-byte payload (must match queueDataPacket_IMU_MAG)
+constexpr size_t MAX_PACKETS_IMU = TARGET_IMU_RATE_HZ * BATCH_SEND_INTERVAL_MS / 1000 * 2;    // 2 batch send periods in case regaular interval is missed
+
+uint8_t  packet_pool[MAX_PACKETS_IMU][PACKET_SIZE_IMU];
+size_t   q_head  = 0;   // producer write index
+size_t   q_tail  = 0;   // sender read index
+size_t   q_count = 0;   // current depth (for fast empty/full checks)
 
 // Global flag for Serial presence, set in setup
 bool hasSerial = false;
@@ -162,9 +171,10 @@ void connectToHost() {
 
       // Establish persistent TCP connection
       if (client.connect(host_ip, host_port)) {
+        client.setNoDelay(true);           // disable Nagle – send small bursts immediately
         if (hasSerial) Serial.println("Persistent TCP connected to host");
         WiFiState = CONNECTED;
-        packet_queue.clear();  // Clear any stale packets
+        q_head = q_tail = q_count = 0;   // Clear circular buffer (zero-allocation version)
         time_init = esp_timer_get_time();
         if (hasSerial) Serial.println("Entering CONNECTED state.");
       } 
@@ -487,28 +497,14 @@ void readMAG(int16_t &mx, int16_t &my, int16_t &mz) {
 
 // ====================== DATA PACKET COLLECT, QUEUE, AND SEND MANGAGEMENT ======================
 
-// ============================================================
-// queueDataPacket_IMU_MAG  (zero-allocation hot-path version)
+
 // ------------------------------------------------------------
 // Builds and enqueues one 34-byte binary-framed IMU/MAG packet
-// at the full target rate (currently 1000 Hz).
+// at the full target rate with ZERO heap
+// allocations in the hot path.
 //
-// This is the highest-frequency function in the entire sketch
-// (called from the 1 ms software timer path). Every microsecond
-// saved here directly improves our ability to sustain the
-// requested IMU rate without timer slippage.
-//
-// Major changes from previous version:
-//   1. Entire packet is assembled in a single fixed-size stack
-//      array (uint8_t packet[34]). No per-sample heap allocations.
-//   2. Timestamp and the 9 × int16_t sensor values are copied
-//      with a single memcpy — far cheaper than 10+ push_back/insert.
-//   3. CRC is now computed with the fast table-driven version
-//      (compute_crc_fast) that matches Python exactly.
-//   4. Only ONE std::vector is created at the very end, and it
-//      is immediately moved into the deque. This is still
-//      compatible with the coalesced batch sender we installed
-//      earlier.
+// Implementation now uses the static circular buffer declared above.
+// Only memcpy + modular index arithmetic remain.
 //
 // Wire layout (34 bytes total, little-endian, unchanged):
 //   [0..1]   uint16_t payload_length = 28
@@ -519,10 +515,8 @@ void readMAG(int16_t &mx, int16_t &my, int16_t &mz) {
 //   [8..15]  uint64_t timestamp_us
 //   [16..33] int16_t  gx,gy,gz,ax,ay,az,mx,my,mz   (9 values)
 //
-// Intent: make the 1000 Hz path cheap enough that the ESP32 can
-// comfortably sustain it while WiFi/TCP is also running. This
-// change + the coalesced sender should get us to ~1000 Hz
-// sustained without further work.
+// Intent: make the path cheap and deterministic enough that
+// the ESP32 can comfortably sustain it while WiFi/TCP is also running.
 // ============================================================
 
 void queueDataPacket_IMU_MAG(uint64_t timestamp_us,
@@ -530,158 +524,115 @@ void queueDataPacket_IMU_MAG(uint64_t timestamp_us,
                              int16_t ax, int16_t ay, int16_t az,
                              int16_t mx, int16_t my, int16_t mz) {
 
-  const size_t HEADER_SIZE   = 6;
-  const size_t PAYLOAD_SIZE  = 2 + sizeof(uint64_t) + 9 * sizeof(int16_t); // 28
-  const size_t TOTAL_SIZE    = HEADER_SIZE + PAYLOAD_SIZE;                   // 34
+    uint8_t packet[PACKET_SIZE_IMU];   // fixed stack buffer – zero heap cost
 
-  uint8_t packet[TOTAL_SIZE];   // fixed stack buffer – zero heap cost
+    // --- Payload first (we need it for CRC) ---
+    size_t offset = HEADER_SIZE_IMU;
 
-  // --- Payload first (we need it for CRC) ---
-  size_t offset = HEADER_SIZE;
+    // nano_id (from flashed const char* NANO_ID)
+    packet[offset++] = static_cast<uint8_t>(atoi(NANO_ID));
 
-  // nano_id (from flashed const char* NANO_ID)
-  packet[offset++] = static_cast<uint8_t>(atoi(NANO_ID));
+    // sensor_type
+    packet[offset++] = static_cast<uint8_t>(SensorDataType::TYPE_IMU_MAG);
 
-  // sensor_type
-  packet[offset++] = static_cast<uint8_t>(SensorDataType::TYPE_IMU_MAG);
+    // timestamp_us (uint64_t, little-endian) – single memcpy
+    memcpy(&packet[offset], &timestamp_us, sizeof(uint64_t));
+    offset += sizeof(uint64_t);
 
-  // timestamp_us (uint64_t, little-endian) – single memcpy
-  memcpy(&packet[offset], &timestamp_us, sizeof(uint64_t));
-  offset += sizeof(uint64_t);
+    // 9 × int16_t in host-expected order: gx gy gz ax ay az mx my mz
+    int16_t imu_mag_vals[9] = {gx, gy, gz, ax, ay, az, mx, my, mz};
+    memcpy(&packet[offset], imu_mag_vals, sizeof(imu_mag_vals));
+    offset += sizeof(imu_mag_vals);
 
-  // 9 × int16_t in host-expected order: gx gy gz ax ay az mx my mz
-  int16_t imu_mag_vals[9] = {gx, gy, gz, ax, ay, az, mx, my, mz};
-  memcpy(&packet[offset], imu_mag_vals, sizeof(imu_mag_vals));
-  offset += sizeof(imu_mag_vals);
+    // --- CRC over payload only (fast table-driven version) ---
+    uint16_t crc = compute_crc_fast(&packet[HEADER_SIZE_IMU], PAYLOAD_SIZE_IMU);
 
-  // --- CRC over payload only (fast table-driven version) ---
-  uint16_t crc = compute_crc_fast(&packet[HEADER_SIZE], PAYLOAD_SIZE);
+    // --- Header (written after CRC is known) ---
+    offset = 0;
 
-  // --- Header (written after CRC is known) ---
-  offset = 0;
+    // Length (uint16_t LE)
+    packet[offset++] = static_cast<uint8_t>(PAYLOAD_SIZE_IMU & 0xFF);
+    packet[offset++] = static_cast<uint8_t>((PAYLOAD_SIZE_IMU >> 8) & 0xFF);
 
-  // Length (uint16_t LE)
-  packet[offset++] = static_cast<uint8_t>(PAYLOAD_SIZE & 0xFF);
-  packet[offset++] = static_cast<uint8_t>((PAYLOAD_SIZE >> 8) & 0xFF);
+    // Sequence number (uint16_t LE) + post-increment
+    packet[offset++] = static_cast<uint8_t>(seq_num & 0xFF);
+    packet[offset++] = static_cast<uint8_t>((seq_num >> 8) & 0xFF);
+    seq_num++;
 
-  // Sequence number (uint16_t LE) + post-increment
-  packet[offset++] = static_cast<uint8_t>(seq_num & 0xFF);
-  packet[offset++] = static_cast<uint8_t>((seq_num >> 8) & 0xFF);
-  seq_num++;
+    // CRC (uint16_t LE)
+    packet[offset++] = static_cast<uint8_t>(crc & 0xFF);
+    packet[offset++] = static_cast<uint8_t>((crc >> 8) & 0xFF);
 
-  // CRC (uint16_t LE)
-  packet[offset++] = static_cast<uint8_t>(crc & 0xFF);
-  packet[offset++] = static_cast<uint8_t>((crc >> 8) & 0xFF);
+    // --- Enqueue into the zero-allocation circular buffer ---
+    if (q_count >= MAX_PACKETS_IMU) {
+        // Buffer full — drop oldest sample (keeps queue "fresh" for pose estimation).
+        // This is a robustness improvement over the previous unbounded deque.
+        q_tail = (q_tail + 1) % MAX_PACKETS_IMU;
+        q_count--;
+    }
 
-  // --- Create the vector that the deque + coalesced sender expect ---
-  // Only one vector per sample, populated from the already-built
-  // fixed buffer. This is still compatible with everything else.
-  std::vector<uint8_t> vec_packet(packet, packet + TOTAL_SIZE);
-
-  // Enqueue (move to avoid any extra copy)
-  packet_queue.push_back(std::move(vec_packet));
+    memcpy(packet_pool[q_head], packet, PACKET_SIZE_IMU);
+    q_head = (q_head + 1) % MAX_PACKETS_IMU;
+    q_count++;
 }
 
 
-// ============================================================
-// sendQueuedDataTCP  (coalesced single-write version)
+// sendQueuedDataTCP  (coalesced writer using circular buffer)
 // ------------------------------------------------------------
-// Highest-impact optimization for sustained high-rate streaming
-// (target 1000 Hz IMU/MAG on Nano ESP32).
+// Highest-impact optimization for sustained high-rate streaming.
+// Now operates on the static circular buffer instead of std::deque.
 //
-// Original behavior that is deliberately preserved:
-//   - Only drains the queue after a *complete* successful write
-//     (prevents partial framing on the TCP stream)
-//   - On any write failure we leave the queue untouched and return
-//     false so the next batch interval will retry the same data
-//   - One flush after a successful batch (same as before)
-//   - Wire format, CRC, seq_num, and packet contents are identical
+// Behavior preserved exactly:
+//   - Only drains on *complete* successful write(s)
+//   - On any partial write we leave tail untouched and return false
+//     so the next 100 ms interval will retry the same data
+//   - One flush after full success
+//   - Wire format, CRC, seq_num unchanged
 //
-// Why this change recovers the missing ~300 Hz:
-//   - At 1000 Hz / 100 ms batch we previously did ~100 individual
-//     client.write() calls. Each small write incurs lwIP overhead.
-//   - The coalesced path does **one** allocation + **one** write per
-//     batch (~100 packets → 3.4 kB). Typical burst time drops from
-//     several ms to << 1 ms.
-//   - loop() is no longer blocked for long periods → the software
-//     IMU timer (IMU_MAG_timerExpired) can fire on its 1 ms cadence
-//     without accumulating missed samples.
-//
-// Intent for future maintainers:
-//   - Keep this function the single place that decides "how we put
-//     bytes on the wire". If you later want UDP, zero-copy, or
-//     different batching, only edit here.
-//   - The temporary vector is intentionally small and short-lived;
-//     it does not affect the per-sample hot path in
-//     queueDataPacket_IMU_MAG.
+// Uses at most two client.write() calls (handles wrap-around).
+// Still far fewer syscalls than the original per-packet writes.
 // ============================================================
 bool sendQueuedDataTCP() {
-  if (!client.connected()) {
-    if (hasSerial) Serial.println("TCP not connected; skipping send");
-    return false;
-  }
-
-  if (packet_queue.empty()) {
-    return true;
-  }
-
-  // --- Step 1: compute total size we will send this batch ---
-  size_t total_size = 0;
-  for (const auto& pkt : packet_queue) {
-    total_size += pkt.size();
-  }
-  if (total_size == 0) {
-    return true;
-  }
-
-  // --- Step 2: build one contiguous buffer (single allocation) ---
-  // We copy the framed packets so we can still decide whether to
-  // drain the deque based on the write result. This keeps the
-  // original error semantics while eliminating 99 % of the TCP
-  // per-packet overhead.
-  std::vector<uint8_t> big_buffer;
-  big_buffer.reserve(total_size);
-  for (const auto& pkt : packet_queue) {
-    big_buffer.insert(big_buffer.end(), pkt.begin(), pkt.end());
-  }
-
-  // --- Step 3: single write for the entire batch ---
-  size_t written = client.write(big_buffer.data(), big_buffer.size());
-
-  if (written == big_buffer.size()) {
-    // Full success — now safe to remove everything we just sent
-    while (!packet_queue.empty()) {
-      packet_queue.pop_front();
+    if (!client.connected()) {
+        if (hasSerial) Serial.println("TCP not connected; skipping send");
+        return false;
     }
-    client.flush();           // same flush semantics as before
-    return true;
-  } else {
-    // Partial or failed write — do NOT drain the queue.
-    // Next call to sendQueuedDataTCP (next batch interval) will
-    // retry the exact same data. This matches the original
-    // "stop on first error, leave queue intact" behavior and
-    // avoids sending a truncated frame that would desync the
-    // length-prefixed reader on the host.
-    if (hasSerial) {
-      Serial.println("Partial or failed batch send — will retry next interval");
+
+    if (q_count == 0) {   // There is no data ready to be sent
+        return true;
     }
-    return false;
-  }
-}
 
-void sendBinaryPacket_Serial(uint64_t ts_us,
-                      int16_t gx, int16_t gy, int16_t gz,
-                      int16_t ax, int16_t ay, int16_t az,
-                      int16_t mx, int16_t my, int16_t mz) {
-  IMUPacket pkt;
-  pkt.sync = 0xAA;
-  pkt.timestamp_us = ts_us;
-  pkt.gx = gx; pkt.gy = gy; pkt.gz = gz;
-  pkt.ax = ax; pkt.ay = ay; pkt.az = az;
-  pkt.mx = mx; pkt.my = my; pkt.mz = mz;
+    // First contiguous segment (may be the entire queue or up to the wrap point)
+    size_t first_chunk = min(q_count, MAX_PACKETS_IMU - q_tail);
+    size_t bytes_first = first_chunk * PACKET_SIZE_IMU;
 
-  // Single efficient write (ESP32 USB CDC handles this well)
-  Serial.write((uint8_t *)&pkt, sizeof(pkt));
+    size_t written = client.write(packet_pool[q_tail], bytes_first);
+
+    if (written != bytes_first) {
+        if (hasSerial) Serial.println("Partial write on first segment — will retry");
+        return false;
+    }
+
+    // Advance past first segment
+    q_tail = (q_tail + first_chunk) % MAX_PACKETS_IMU;
+    q_count -= first_chunk;
+
+    // Second segment if we wrapped
+    if (q_count > 0) {
+        size_t bytes_second = q_count * PACKET_SIZE_IMU;
+        written = client.write(packet_pool[q_tail], bytes_second);
+
+        if (written != bytes_second) {
+            if (hasSerial) Serial.println("Partial write on wrap segment — will retry");
+            return false;
+        }
+
+        q_tail = (q_tail + q_count) % MAX_PACKETS_IMU;
+        q_count = 0;
+    }
+
+    client.flush();
+    return true;
 }
 
 // -----------------------------------------------------------------------------
@@ -739,6 +690,7 @@ void setup() {
   }
 
   WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
   int n = WiFi.scanNetworks();
   Serial.println("WiFi network scan done. Listing networks...");
   if (n == 0) {
@@ -814,8 +766,15 @@ void loop() {
       // Check if time to send batch of packets
       unsigned long now = millis();
       if (now - last_batch_send >= BATCH_SEND_INTERVAL_MS) {
+        unsigned long send_start = micros();
         sendQueuedDataTCP();
+        unsigned long send_end = micros();
         last_batch_send = now;
+
+        if (hasSerial) {
+          Serial.print("Send took (us):");
+          Serial.println(send_end - send_start);
+        }
       }
       monitorConnection();
     } break;

@@ -136,10 +136,9 @@ class WiFiDataServer(QtCore.QObject):
     def _client_loop(self, conn, addr):
         while self.running:
             try:
-                header = self._read_fully(conn, 6)
+                header = self._read_fully(conn, 4)
                 length = struct.unpack('<H', header[:2])[0]
-                seq = struct.unpack('<H', header[2:4])[0]
-                received_crc = struct.unpack('<H', header[4:6])[0]
+                received_crc = struct.unpack('<H', header[2:4])[0]
 
                 post_data = self._read_fully(conn, length)
                 if len(post_data) != length:
@@ -156,7 +155,7 @@ class WiFiDataServer(QtCore.QObject):
                     if handler is not None:
                         handler.receive_queue.put(post_data)
                     else:
-                        raise ValueError(f"[WiFiDataServer] Received packet from Nano_{nano_id:02d} but no handler registered. Update IDs.")
+                        raise ValueError(f"Received packet from Nano_{nano_id:02d} but no handler registered.")
             except (EOFError, ConnectionResetError, socket.timeout):
                 break
             except Exception as e:
@@ -421,11 +420,13 @@ class DataReceiverWriter(QtCore.QThread):
                 if len(post_data) == self.ICB_payload_len:
                     sensor_payload = post_data
                     fmt = '<BB' + 'Iii' * self.num_sensors
+                    sensor_type = Config.SENSOR_TYPE_ICB
                 elif len(post_data) == self.IMU_MAG_payload_len:
                     if not self.imu_mode:
                         continue
                     sensor_payload = post_data
-                    fmt = '<BB' + 'Q' + 'h'*9
+                    fmt = '<B' + 'I' + 'h'*9
+                    sensor_type = Config.SENSOR_TYPE_IMU_MAG
                 else:
                     self.status_signal.emit(f"Invalid packet length for Nano_{self.nano_id:02d}")
                     continue
@@ -433,7 +434,6 @@ class DataReceiverWriter(QtCore.QThread):
                 try:
                     unpacked = struct.unpack(fmt, sensor_payload)
                     probe_id = unpacked[0]
-                    sensor_type = unpacked[1]
                     if probe_id != self.nano_id:
                         continue
 
@@ -461,11 +461,11 @@ class DataReceiverWriter(QtCore.QThread):
 
                     elif sensor_type == Config.SENSOR_TYPE_IMU_MAG:
                         # (IMU handling unchanged except it will now also benefit from batched emit in Improvement 4)
-                        time_us = unpacked[2]
-                        time_s = float(time_us / 1e6)
-                        gyro_x, gyro_y, gyro_z = unpacked[3], unpacked[4], unpacked[5]
-                        accel_x, accel_y, accel_z = unpacked[6], unpacked[7], unpacked[8]
-                        mag_x, mag_y, mag_z = unpacked[9], unpacked[10], unpacked[11]
+                        time_us = unpacked[1]
+                        time_s = float(time_us / 1_000_000.0)
+                        gyro_x, gyro_y, gyro_z = unpacked[2], unpacked[3], unpacked[4]
+                        accel_x, accel_y, accel_z = unpacked[5], unpacked[6], unpacked[7]
+                        mag_x, mag_y, mag_z = unpacked[8], unpacked[9], unpacked[10]
 
                         row = [f"{time_s:.6f}",
                                f"{gyro_x:+08d}", f"{gyro_y:+08d}", f"{gyro_z:+08d}",
@@ -501,9 +501,11 @@ class DataReceiverWriter(QtCore.QThread):
 
             # Emit IMU/MAG batch in one emission
             if self.imu_processed_buffer:
+                imu_batch_emit_list = []
                 while self.imu_processed_buffer:
-                    one_imu_packet = self.imu_processed_buffer.popleft()
-                    self.imu_data_ready.emit(one_imu_packet)
+                    imu_batch_emit_list.append(self.imu_processed_buffer.popleft())
+                if imu_batch_emit_list:
+                    self.imu_data_ready.emit(imu_batch_emit_list)
             
     
     def _maybe_flush_csv(self, force=False):
@@ -985,11 +987,9 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
     # =============================================================================
 
     # Match the constants used in the original serial monitor for consistency
-    DEFAULT_IMU_RATE_HZ = 6660          # conservative upper bound for maxlen calc
+    DEFAULT_IMU_RATE_HZ = 3000          # conservative upper bound for maxlen calc
     DEFAULT_MAG_RATE_HZ = 1000
-    DEFAULT_PLOT_WINDOW_S = 2.0         # longer horizon than ICB for IMU validation
-    PACKET_SIZE = 27
-    SYNC_BYTE = 0xAA                    # not used here (WiFi+CRC already clean)
+    DEFAULT_PLOT_WINDOW_S = 3.0         # longer horizon than ICB for IMU validation
 
     def __init__(self, data_receiver_writer, plot_window_s: float = DEFAULT_PLOT_WINDOW_S):
         super().__init__()
@@ -1000,8 +1000,6 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
         self.plot_window_s = plot_window_s
         self.start_ts_us = None
         self.pkt_count = 0
-        self.last_plot_update = 0.0
-        self.rate_estimate = 0.0
         self._last_t = None
         self.rescale_interval = 0.5
         self.last_y_rescale_time = 0.0
@@ -1035,7 +1033,7 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
 
         # Status line (monospace, large for quick glance on RPi5 touchscreen)
         self.status_label = QtWidgets.QLabel()
-        self.status_label.setStyleSheet("font-family: monospace; font-size: 14px;")
+        self.status_label.setStyleSheet("font-family: monospace; font-size: 30px;")
         layout.addWidget(self.status_label)
 
         # ---- Gyro subplot ----
@@ -1118,41 +1116,55 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
             except:
                 return False
 
-    def _handle_imu_packet(self, data_list):
+    def _handle_imu_packet(self, imu_batch):
         """
         Called via Qt signal from DataReceiverWriter (background thread).
         Extremely lightweight — just append to deques and bump counters.
         All heavy lifting (array conversion + drawing) happens in _update_plots.
+        Supports batched emissions (list-of-packets) for
+        reduced Qt event overhead on Pi 5 / desktop. Legacy single-packet calls
+        are still supported for safety during the transition.
         """
-        if len(data_list) != 10:
+        if not imu_batch:
             return
 
-        time_s, gx, gy, gz, ax, ay, az, mx, my, mz = data_list
+        # # Normalize to always iterate over a list of packets
+        # # (supports both the new batched emit and any old single-packet calls)
+        # if isinstance(imu_batch[0], (list, tuple)) and len(imu_batch[0]) == 10:
+        #     packets = imu_batch
+        # else:
+        #     packets = [imu_batch]
 
-        if self.start_ts_us is None:
-            # First packet — anchor the relative time base exactly like IMUMonitor
-            self.start_ts_us = time_s * 1_000_000   # store as us for consistency
-            self._first_wall_time = time.perf_counter()
+        for data_list in imu_batch:
+            if len(data_list) != 10:
+                continue
 
-        t_rel = time_s - (self.start_ts_us / 1_000_000.0)
+            time_s, gx, gy, gz, ax, ay, az, mx, my, mz = data_list
 
-        # Append to ring buffers (O(1))
-        self.t_buf.append(t_rel)
-        self.gx_buf.append(gx)
-        self.gy_buf.append(gy)
-        self.gz_buf.append(gz)
-        self.ax_buf.append(ax)
-        self.ay_buf.append(ay)
-        self.az_buf.append(az)
-        self.mx_buf.append(mx)
-        self.my_buf.append(my)
-        self.mz_buf.append(mz)
+            if self.start_ts_us is None:
+                # First packet — anchor the relative time base exactly like IMUMonitor
+                self.start_ts_us = time_s * 1_000_000   # store as us for consistency
+                self._first_wall_time = time.perf_counter()
 
-        self.pkt_count += 1
+            t_rel = time_s - (self.start_ts_us / 1_000_000.0)
 
-        # Occasional status update (not every packet — cheap)
-        if self.pkt_count % 50 == 0:
-            self._update_status()
+            # Append to ring buffers (O(1))
+            self.t_buf.append(t_rel)
+            self.gx_buf.append(gx)
+            self.gy_buf.append(gy)
+            self.gz_buf.append(gz)
+            self.ax_buf.append(ax)
+            self.ay_buf.append(ay)
+            self.az_buf.append(az)
+            self.mx_buf.append(mx)
+            self.my_buf.append(my)
+            self.mz_buf.append(mz)
+
+            self.pkt_count += 1
+
+            # Occasional status update (not every packet — cheap)
+            if self.pkt_count % int(self.DEFAULT_IMU_RATE_HZ/2) == 0:
+                self._update_status()
 
     def _update_plots(self):
         """Called at 12-40 Hz by QTimer. Only here do we pay the numpy cost."""
@@ -1208,13 +1220,16 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
             plot_widget.setYRange(y_min - padding, y_max + padding)
 
     def _update_status(self, extra: str = ""):
-        if self.start_ts_us is None:
+        if len(self.t_buf) < 2:
             rate = 0.0
-            elapsed = 0.0
         else:
-            # Use wall time for rate so it stays accurate even if sensor clock jumps
-            elapsed = time.perf_counter() - self._first_wall_time
-            rate = self.pkt_count / max(elapsed, 0.001)
+            # Sliding-window rate over the last self.rate_window_s seconds
+            # (or however much data we have accumulated so far).
+            # Using deque end-point access is O(1) and very cheap.
+            t_first = self.t_buf[0]
+            t_last = self.t_buf[-1]
+            t_span = t_last - t_first
+            rate = (len(self.t_buf) - 1) / max(t_span, 1e-6)
 
         msg = (f"IMU Packets: {self.pkt_count:6d} | "
                f"Rate: {rate:.1f} Hz | "

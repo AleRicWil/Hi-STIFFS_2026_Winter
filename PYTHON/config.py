@@ -116,6 +116,6 @@ class Config:
             return 2 + num_icb_sensors * 12
         
         elif sensor_type == Config.SENSOR_TYPE_IMU_MAG:
-            # 1 byte (probe_id) + 1 byte (sensor_type) + 8 bytes (time_us) {uses uint64}
+            # 1 byte (probe_id) + 4 bytes (time_us) {uses uint32}
             # 9*[2 bytes] (int16 for each of 9 DOFs)
-            return 2 + 8 + 9*2
+            return 1 + 4 + 9*2
