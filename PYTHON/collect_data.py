@@ -136,9 +136,9 @@ class WiFiDataServer(QtCore.QObject):
     def _client_loop(self, conn, addr):
         while self.running:
             try:
-                header = self._read_fully(conn, 4)
-                length = struct.unpack('<H', header[:2])[0]
-                received_crc = struct.unpack('<H', header[2:4])[0]
+                header = self._read_fully(conn, 3)
+                length = header[0]
+                received_crc = struct.unpack('<H', header[1:3])[0]
 
                 post_data = self._read_fully(conn, length)
                 if len(post_data) != length:
@@ -987,11 +987,11 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
     # =============================================================================
 
     # Match the constants used in the original serial monitor for consistency
-    DEFAULT_IMU_RATE_HZ = 3000          # conservative upper bound for maxlen calc
-    DEFAULT_MAG_RATE_HZ = 1000
-    DEFAULT_PLOT_WINDOW_S = 3.0         # longer horizon than ICB for IMU validation
+    IMU_RATE_HZ = 3000         # conservative upper bound for maxlen calc
+    MAG_RATE_HZ = 1000
+    PLOT_WINDOW_S = 3.0         # longer horizon than ICB for IMU validation
 
-    def __init__(self, data_receiver_writer, plot_window_s: float = DEFAULT_PLOT_WINDOW_S):
+    def __init__(self, data_receiver_writer, plot_window_s: float = PLOT_WINDOW_S):
         super().__init__()
         self.setWindowTitle("Hi-STIFFS | 9-DOF IMU Live Monitor (Wi-Fi) — Raw Integers")
         self.resize(1100, 900)
@@ -1010,7 +1010,7 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
         # Same strategy as IMUMonitor and as the ICB deques in RealTimePlotWindow.
         # maxlen gives automatic oldest-sample drop. Extra headroom so we can
         # scroll smoothly while the visible window is only plot_window_s seconds.
-        maxlen = int(plot_window_s * self.DEFAULT_IMU_RATE_HZ * 1.1) + 200
+        maxlen = int(plot_window_s * self.IMU_RATE_HZ * 1.1) + 200
         self.t_buf   = collections.deque(maxlen=maxlen)
         self.gx_buf  = collections.deque(maxlen=maxlen)
         self.gy_buf  = collections.deque(maxlen=maxlen)
@@ -1163,7 +1163,7 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
             self.pkt_count += 1
 
             # Occasional status update (not every packet — cheap)
-            if self.pkt_count % int(self.DEFAULT_IMU_RATE_HZ/2) == 0:
+            if self.pkt_count % int(self.IMU_RATE_HZ/2) == 0:
                 self._update_status()
 
     def _update_plots(self):
