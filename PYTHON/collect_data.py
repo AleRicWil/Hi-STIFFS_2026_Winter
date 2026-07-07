@@ -149,13 +149,12 @@ class WiFiDataServer(QtCore.QObject):
                     continue
 
                 # Route by nano_id (first byte of the sensor payload)
-                if len(post_data) > 0:
-                    nano_id = post_data[0]
-                    handler = self.probe_handlers.get(nano_id)
-                    if handler is not None:
-                        handler.receive_queue.put(post_data)
-                    else:
-                        raise ValueError(f"Received packet from Nano_{nano_id:02d} but no handler registered.")
+                nano_id = post_data[0]
+                handler = self.probe_handlers.get(nano_id)
+                if handler is not None:
+                    handler.receive_queue.put(post_data)
+                else:
+                    raise ValueError(f"Received packet from Nano_{nano_id:02d} but no handler registered.")
             except (EOFError, ConnectionResetError, socket.timeout):
                 break
             except Exception as e:
@@ -416,10 +415,9 @@ class DataReceiverWriter(QtCore.QThread):
                 post_data_list = []
 
             for post_data in post_data_list:
-                # (existing packet length / unpack / validation logic stays exactly the same)
                 if len(post_data) == self.ICB_payload_len:
                     sensor_payload = post_data
-                    fmt = '<BB' + 'Iii' * self.num_sensors
+                    fmt = '<B' + 'I3s3s' * self.num_sensors
                     sensor_type = Config.SENSOR_TYPE_ICB
                 elif len(post_data) == self.IMU_MAG_payload_len:
                     if not self.imu_mode:
@@ -438,22 +436,36 @@ class DataReceiverWriter(QtCore.QThread):
                         continue
 
                     if sensor_type == Config.SENSOR_TYPE_ICB:
-                        times_us = unpacked[2::3]
-                        raws1    = unpacked[3::3]
-                        raws2    = unpacked[4::3]
-                        times = [ts / 1000000.0 for ts in times_us]
+                        # Walk through the unpacked tuple
+                        idx = 1
+                        times = []
+                        raws1 = []
+                        raws2 = []
+
+                        for _ in range(self.num_sensors):
+                            ts_us   = unpacked[idx]                    # little-endian uint32
+                            ch1_raw = unpacked[idx + 1]                # 3-byte big-endian
+                            ch2_raw = unpacked[idx + 2]                # 3-byte big-endian
+
+                            times.append(ts_us / 1_000_000.0)
+                            # Convert the true 24-bit big-endian signed value
+                            raws1.append(int.from_bytes(ch1_raw, byteorder='big', signed=True))
+                            raws2.append(int.from_bytes(ch2_raw, byteorder='big', signed=True))
+                            idx += 3
 
                         t_now = times[0]
                         delta = t_now - self.last_t
                         self.rate_estimate = 1.0 / delta if delta > 1e-9 else 0.0
                         self.last_t = t_now
 
+                        # Build CSV row
                         row = []
                         for j in range(self.num_sensors):
                             row += [f"{times[j]:.6f}", f"{raws1[j]:+08d}", f"{raws2[j]:+08d}"]
                         row += [datetime.datetime.now().time()]
                         batch_rows.append(row)
 
+                        # Emit flat list for the plot window
                         emit_list = []
                         for j in range(self.num_sensors):
                             emit_list += [times[j], raws1[j], raws2[j]]
@@ -1149,7 +1161,7 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
             t_rel = time_s - (self.start_ts_us / 1_000_000.0)
 
             # Append to ring buffers (O(1))
-            self.t_buf.append(t_rel)
+            self.t_buf.append(time_s)
             self.gx_buf.append(gx)
             self.gy_buf.append(gy)
             self.gz_buf.append(gz)
@@ -1370,8 +1382,8 @@ if __name__ == "__main__":
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
     run_collection( nano_id=[1],
-                    sensors=["A B C"],
-                    sensor_sns=["001 003 005"],
+                    sensors=["A B C D E F"],
+                    sensor_sns=["001 003 005 001 004 101"],
                     probe_height_m=[0.785],
                     header_content=[example_header_content],
                     show_raw_strains=False,
@@ -1381,4 +1393,4 @@ if __name__ == "__main__":
     #                 sensor_sns=["001 003 005", "002 004 011"],
     #                 probe_height_m=[0.790, 0.790],
     #                 header_content=[example_header_content, example_header_content],
-    #                 )
+    #                 imu_mode=True)

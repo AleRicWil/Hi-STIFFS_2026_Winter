@@ -15,7 +15,7 @@
  * ARCHITECTURE (FreeRTOS + dedicated esp_timers)
  * ----------------------------------------------
  * SamplingTask (configMAX_PRIORITIES-4, pinned to core 1)
- *   - Woken by hardware sampling_timer ISR at exactly IMU_INTERVAL_US.
+ *   - Woken by hardware samplingTimer_IMU ISR at exactly IMU_INTERVAL_US.
  *   - Burst-reads 12 bytes from IMU.
  *   - Simple uint32 counter; every Nth wake (TARGET_IMU_RATE_HZ / TARGET_MAG_RATE_HZ)
  *     performs a fresh 6-byte MAG read and updates the three latched int16 values.
@@ -34,7 +34,7 @@
  *   - Periodic monitorConnection() health check.
  *
  * Timing sources (both ESP_TIMER_TASK)
- *   - sampling_timer: period = IMU_INTERVAL_US → hardware-precise wake-ups.
+ *   - samplingTimer_IMU: period = IMU_INTERVAL_US → hardware-precise wake-ups.
  *   - batch_timer: period = BATCH_SEND_INTERVAL_MS * 1000 µs (50 ms) →
  *     wakes NetworkTask to transmit the accumulated batch.
  *
@@ -91,10 +91,11 @@
 // ========== INCLUDES ==========
 #include <SPI.h>                          // SPIClass + beginTransaction/endTransaction API used for every 8 MHz MSBFIRST SPI_MODE3 transaction to both sensors (burst 12-byte IMU or 6-byte MAG reads)
 #include <WiFi.h>                         // WiFi STA + WiFiClient used by NetworkTask to maintain the single persistent TCP connection that carries every 27-byte binary packet to the host collector
-#include "esp_timer.h"                    // esp_timer_create + esp_timer_start_periodic used to create the two hardware-timed sources: sampling_timer (IMU_INTERVAL_US) and batch_timer (50 ms)
+#include "esp_timer.h"                    // esp_timer_create + esp_timer_start_periodic used to create the two hardware-timed sources: samplingTimer_IMU (IMU_INTERVAL_US) and batch_timer (50 ms)
 #include "freertos/FreeRTOS.h"            // BaseType_t, pdTRUE, pdFALSE, portMAX_DELAY, configMAX_PRIORITIES — foundational types for all semaphore and task-priority logic in this sketch
 #include "freertos/task.h"                // xTaskCreatePinnedToCore, vTaskDelay, portYIELD_FROM_ISR — creates the two pinned tasks (SamplingTask on core 1, NetworkTask on core 0)
 #include "freertos/semphr.h"              // xSemaphoreCreateMutex, xSemaphoreCreateBinary, xSemaphoreTake/Give, xSemaphoreGiveFromISR — protects the circular packet buffer and wakes the two tasks from timer ISRs
+#include "Protocentral_ADS1220.h"
 
 // ========== REGISTER ADDRESSES ==========
 #define IMU_WHO_AM_I          0x0F        // ISM330DHCX WHO_AM_I register (datasheet §6.1); read once in bringup_IMU() and must return IMU_WHO_AM_I_VAL before any configuration proceeds
@@ -121,18 +122,36 @@
 #define SPI_SCK     13                    // GPIO13 on Nano ESP32 wired to SCK of both ISM330DHCX and LIS3MDL; driven at 8 MHz by the SPI library for maximum noise margin on field cables
 #define SPI_MISO    11                    // GPIO11 wired to MISO/SDO of both sensors; receives the 12-byte IMU or 6-byte MAG burst during every sample inside readIMU() / readMAG()
 #define SPI_MOSI    12                    // GPIO12 wired to MOSI/SDI of both sensors; carries the register address byte (with R/W bit) plus any write data during configuration and burst commands
+
+#define A_CS_PIN 10
+#define A_DRDY_PIN 9
+#define B_CS_PIN 8
+#define B_DRDY_PIN 7
+#define C_CS_PIN 6
+#define C_DRDY_PIN 5
+
+#define D_CS_PIN 4
+#define D_DRDY_PIN 3
+#define E_CS_PIN 2
+#define E_DRDY_PIN A1
+#define F_CS_PIN A2
+#define F_DRDY_PIN A3
+
 #define IMU_CS_PIN  A4                    // GPIO A4 drives the active-low CS pin of the ISM330DHCX only; held high except during its own SPI transactions so the shared bus remains collision-free
 #define MAG_CS_PIN  A5                    // GPIO A5 drives the active-low CS pin of the LIS3MDL only; independent from IMU_CS_PIN so either device can be selected while the other stays deselected
 
 // ========== SPI SETTINGS ==========
 // Kept at 8 MHz for maximum long-term stability in field deployments
 // (both chips support 10 MHz, but 8 MHz has more margin on long cables / noise).
-SPISettings sensorSPI_IMU_MAG(8000000, MSBFIRST, SPI_MODE3);
+const SPISettings sensorSPI_ICB(2000000, MSBFIRST, SPI_MODE1);
+const SPISettings sensorSPI_IMU_MAG(8000000, MSBFIRST, SPI_MODE3);
 
 // ========== USER TUNABLE GLOBAL CONSTANTS ==========
-// Change these lines to control the target output data rates and ranges.
-// The bringup functions will automatically select the closest supported
-// hardware ODR that is >= the target (rounded up from datasheet tables).
+const int MAX_SENSORS = 6;     // Maximum possible sensors (A to E)
+const int NUM_SENSORS = 3;     // Set to 1-5 to use the first N sensors from all_configs below.
+const uint8_t dr_code = DR_330SPS;  // Data Rate value. In turbo, value is for pairs/sec. In normal, value is for samples/sec
+const uint16_t TARGET_ICB_RATE_HZ = 330;
+
 const uint16_t TARGET_IMU_RATE_HZ = 3000;   // IMU (accel + gyro). Supported HP rates: 12.5, 26, 52, 104, 208, 416, 833, 1660, 3330, 6660 Hz
 const uint16_t TARGET_MAG_RATE_HZ = 1000;   // MAG. Supported with FAST_ODR: 155 (UHP), 300 (HP), 560 (MP), 1000 (LP) Hz
 const uint32_t IMU_INTERVAL_US = 1000000UL / TARGET_IMU_RATE_HZ;
@@ -149,7 +168,7 @@ const char* host_ip = "192.168.137.1";                // Static IPv4 of the Pyth
 const int host_port = 8080;                           // TCP listening port of WiFiDataServer; chosen above the privileged range for cross-platform (Win/Linux/RPi5) compatibility while keeping connection setup fast
 const uint8_t NANO_ID = 1;                           // ASCII string form of this probe’s unique 2-digit identifier; atoi()’d at packet-build time and placed as the very first payload byte so the host routes data to the correct DataReceiverWriter instance
 const unsigned long BATCH_SEND_INTERVAL_MS = 50;      // Period of batch_timer esp_timer; NetworkTask wakes every 50 ms to snapshot and transmit the circular buffer
-const unsigned long WiFi_CHECK_INTERVAL_MS = 5000;    // Health-check cadence inside NetworkTask’s CONNECTED state; 5 s is infrequent enough to avoid stealing cycles from the high-priority SamplingTask yet fast enough to detect and recover from transient field WiFi drops before pose data gaps appear
+const unsigned long WiFi_CHECK_INTERVAL_MS = 2000;    // Health-check cadence inside NetworkTask’s CONNECTED state; 5 s is infrequent enough to avoid stealing cycles from the high-priority SamplingTask yet fast enough to detect and recover from transient field WiFi drops before pose data gaps appear
 const unsigned long WiFi_RETRY_DELAY_MS = 5000;       // Minimum back-off between connectToHost() attempts; prevents CPU spin during AP association or TCP failures and protects the deterministic IMU sampling path on core 1
 enum State_WiFi {                                     // Minimal two-state FSM owned exclusively by NetworkTask; keeps all blocking WiFi/TCP work off the real-time SamplingTask so IMU/MAG timing remains jitter-free
   CONNECTING,                                         // Transitional state entered on boot or after disconnect; SamplingTask sees g_isConnected == false and skips enqueueing packets
@@ -158,94 +177,141 @@ enum State_WiFi {                                     // Minimal two-state FSM o
 State_WiFi WiFiState = CONNECTING;                    // Global FSM variable initialized to CONNECTING so NetworkTask immediately begins association on power-up; updated only inside NetworkTask for thread safety
 WiFiClient client;                                    // Persistent TCP client object from the ESP32 WiFi stack; kept open for the entire sketch lifetime with setNoDelay(true)
 
+// ========== ICB Sensor Global Config ==========
+struct SensorConfig_ICB {
+  char id;                     // Sensor ID ('A', 'B', etc.)
+  int cs_pin;                  // Chip Select pin
+  int drdy_pin;                // Data Ready pin
+};
+
+SensorConfig_ICB all_configs[MAX_SENSORS] = {
+  {'A', A_CS_PIN, A_DRDY_PIN},
+  {'B', B_CS_PIN, B_DRDY_PIN},
+  {'C', C_CS_PIN, C_DRDY_PIN},
+  {'D', D_CS_PIN, D_DRDY_PIN},
+  {'E', E_CS_PIN, E_DRDY_PIN},
+  {'F', F_CS_PIN, F_DRDY_PIN}
+};
+
+Protocentral_ADS1220 adcs[MAX_SENSORS];             // ADC objects from library
+int32_t raw_values[MAX_SENSORS][2];                 // [sensor][channel]: raw 24-bit signed ADC values; 0=ch1 (AIN0-1), 1=ch2 (AIN2-3)
+unsigned long timestamps[MAX_SENSORS];              // Per-chip timestamps for each pair
+uint8_t current_channels[MAX_SENSORS] = {0};        // Indicates which MUX channel to read from for an ADS1220 module
+volatile uint8_t ready_mask = 0;                    // Bitmask tracking ready sensors (bit i set to (1) when sensor i pair is complete)
+
 // ========== Binary Packet Queue and Sizing ==========
 uint64_t time_init = 0;                                   // µs epoch captured exactly when TCP connects; every packet timestamp is relative to this
+
+const size_t HEADER_SIZE_ICB = 3;                         // Fixed 3-byte prefix: uint8 payload length + uint16 CRC16 (little-endian)
+const size_t PAYLOAD_SIZE_ICB = 1 + NUM_SENSORS*(sizeof(uint32_t) + 2*sizeof(uint32_t)); // nano_id (1 B) + NUM_SENSORS*(timestamp_us (4 B) + 2×int32 (raw1, raw2))
+const size_t PACKET_SIZE_ICB = HEADER_SIZE_ICB + PAYLOAD_SIZE_ICB;
+constexpr size_t MAX_PACKETS_ICB = TARGET_ICB_RATE_HZ * BATCH_SEND_INTERVAL_MS / 1000 * 20;  // Ring depth sized for ~20 batches of headroom at target rate
+uint8_t packet_pool_ICB[MAX_PACKETS_ICB][PACKET_SIZE_ICB]; // Zero-heap circular buffer; each slot holds one complete ready-to-send packet
+size_t q_ICB_head = 0;
+size_t q_ICB_tail = 0;
+size_t q_ICB_count = 0;
+
 const size_t HEADER_SIZE_IMU   = 3;                       // Fixed 3-byte prefix: uint8 payload length + uint16 CRC16 (little-endian)
 const size_t PAYLOAD_SIZE_IMU  = 1 + sizeof(uint32_t) + 9 * sizeof(int16_t);  // nano_id (1 B) + timestamp_us (4 B) + 9×int16 (gx gy gz ax ay az mx my mz)
 const size_t PACKET_SIZE_IMU = HEADER_SIZE_IMU + PAYLOAD_SIZE_IMU;            // Total wire size = 26 bytes per high-rate IMU/MAG sample
 constexpr size_t MAX_PACKETS_IMU = TARGET_IMU_RATE_HZ * BATCH_SEND_INTERVAL_MS / 1000 * 20;  // Ring depth sized for ~20 batches of headroom at target rate
-uint8_t  packet_pool[MAX_PACKETS_IMU][PACKET_SIZE_IMU];   // Zero-heap circular buffer; each slot holds one complete ready-to-send 27-byte packet
-size_t   q_head  = 0;                                     // Producer write index (SamplingTask enqueues here)
-size_t   q_tail  = 0;                                     // Consumer read index (NetworkTask dequeues here)
-size_t   q_count = 0;                                     // Current number of valid packets in the ring (mutex-protected)
+uint8_t  packet_pool_IMU[MAX_PACKETS_IMU][PACKET_SIZE_IMU];   // Zero-heap circular buffer; each slot holds one complete ready-to-send 27-byte packet
+size_t   q_IMU_head  = 0;                                     // Producer write index (SamplingTask enqueues here)
+size_t   q_IMU_tail  = 0;                                     // Consumer read index (NetworkTask dequeues here)
+size_t   q_IMU_count = 0;                                     // Current number of valid packets in the ring (mutex-protected)
+
 static uint16_t crc_table[256];                           // Table of all possible crc values, so packet writing can look it up rather than computing each time
 
 // ========== RTOS Objects and Shared State ==========
 // Decision: mutex for buffer + lightweight flag to avoid lock in hottest path (priority inheritance, negligible overhead)
-SemaphoreHandle_t bufferMutex = NULL;                 // Protects circular buffer indices during enqueue (SamplingTask) and snapshot/commit (NetworkTask)
+SemaphoreHandle_t bufferMutex_ICB = NULL;
+SemaphoreHandle_t bufferMutex_IMU = NULL;             // Protects circular buffer indices during enqueue (SamplingTask) and snapshot/commit (NetworkTask)
 SemaphoreHandle_t batchSemaphore = NULL;              // Binary semaphore woken by batch_timer every 50 ms to trigger NetworkTask packet transmission
-esp_timer_handle_t batch_timer = NULL;                // Periodic esp_timer providing the batch rhythm for low-latency 3 kHz streaming
-const uint32_t SAMPLING_TIMER_PERIOD_US = IMU_INTERVAL_US;  // Hardware timer period = exact IMU target interval for jitter-free sampling
-SemaphoreHandle_t samplingSemaphore = NULL;           // Binary semaphore driven by sampling_timer at precise IMU rate (fewer wake-ups than software timers)
-esp_timer_handle_t sampling_timer = NULL;             // High-resolution esp_timer waking SamplingTask with deterministic hardware timing
+esp_timer_handle_t batch_timer = NULL;                // Periodic esp_timer providing the batch rhythm
+SemaphoreHandle_t samplingSemaphore_IMU = NULL;       // Binary semaphore driven by samplingTimer_IMU at precise IMU rate (fewer wake-ups than software timers)
+esp_timer_handle_t samplingTimer_IMU = NULL;          // High-resolution esp_timer waking SamplingTask with deterministic hardware timing
 volatile bool g_isConnected = false;                  // Lock-free flag read by SamplingTask; written only by NetworkTask on connect/disconnect transitions
-bool hasSerial = false;                                   // Set after Serial.begin succeeds; used to safely gate all debug prints
+bool hasSerial = false;                               // Set after Serial.begin succeeds; used to safely gate all debug prints
+bool imu_mag_present = false;
 
 // ========== WIFI FUNCTIONS ANG HELPERS ==========
 
 void connectToHost() {
-    static unsigned long lastRetry = 0;
-    unsigned long now = millis();
+  static unsigned long lastRetry = 0;
+  unsigned long now = millis();
 
-    // Rate-limit attempts with static backoff to avoid spinning CPU
-    // or hammering the AP when it is temporarily unavailable.
-    if (now - lastRetry >= WiFi_RETRY_DELAY_MS) {
-        lastRetry = now;
+  // Rate-limit attempts with static backoff to avoid spinning CPU
+  // or hammering the AP when it is temporarily unavailable.
+  if (now - lastRetry < WiFi_RETRY_DELAY_MS) return;
 
-        if (hasSerial) {
-            Serial.print("\nConnecting to ");
-            Serial.println(ssid);
-        }
+  lastRetry = now;
 
-        WiFi.begin(ssid, password);
+  if (hasSerial) Serial.print("\nConnecting to "); Serial.println(ssid);
 
-        // Poll with short delays so other work can proceed.
-        unsigned long startAttempt = millis();
-        while (WiFi.status() != WL_CONNECTED && (millis() - startAttempt < WiFi_RETRY_DELAY_MS)) {
-            delay(500);
-            if (hasSerial) {
-                Serial.print(".");
-                Serial.print(WiFi.status());
-            }
-        }
+// Only start a new WiFi association if we are not already connected.
+  // Calling WiFi.begin() while already connected is what was causing
+  // long stalls and watchdog resets.
+  if (WiFi.status() != WL_CONNECTED) {
+      WiFi.begin(ssid, password);
 
-        if (WiFi.status() == WL_CONNECTED) {
-            if (hasSerial) {
-                Serial.println("\nWiFi connected");
-                Serial.print("IP address: ");
-                Serial.println(WiFi.localIP());
-                Serial.println("Attempting TCP server connection...");
-            }
+      unsigned long startAttempt = millis();
+      // Poll with short yields instead of one long 8 s block.
+      // This keeps NetworkTask responsive and feeds the watchdog.
+      while (WiFi.status() != WL_CONNECTED &&
+              (millis() - startAttempt < WiFi_RETRY_DELAY_MS)) {
+          vTaskDelay(pdMS_TO_TICKS(100));          // better than delay() in a FreeRTOS task
+          // esp_task_wdt_reset();                    // explicitly feed watchdog
+          if (hasSerial) Serial.print(".");
+      }
+  }
 
-            if (client.connect(host_ip, host_port)) {
-                client.setNoDelay(true);           // Send small batches immediately
-                WiFiState = CONNECTED;
-                q_head = q_tail = q_count = 0;     // Discard any stale packets
-                time_init = esp_timer_get_time();  // Fresh timestamp epoch
-                g_isConnected = true;              // Allow SamplingTask to resume enqueuing
+  if (WiFi.status() == WL_CONNECTED) {
+      if (hasSerial) {
+          Serial.println("\nWiFi connected");
+          Serial.print("IP: "); Serial.println(WiFi.localIP());
+          Serial.println("Trying persistent TCP to host...");
+      }
 
-                if (hasSerial) Serial.println("Persistent TCP connected to host. Entering CONNECTED state.");
-            } 
-            else {
-              if (hasSerial) Serial.println("TCP server connection failed");
-            }
-        } 
-        else {
-          if (hasSerial)Serial.println("\nWiFi Connection failed, retrying...");
-        }
-    }
+      // Try TCP
+      if (client.connect(host_ip, host_port)) {
+          client.setNoDelay(true);
+          WiFiState = CONNECTED;
+          g_isConnected = true;
+
+          // We are now safely connected again → re-initialise ADCs + timestamps
+          // and re-enable the ICB interrupts we disabled while reconnecting.
+          initializeADCs();
+          ready_mask = 0;
+          q_IMU_head = q_IMU_tail = q_IMU_count = 0;
+          q_ICB_head = q_ICB_tail = q_ICB_count = 0;
+          time_init = esp_timer_get_time();
+
+          // Re-enable ICB DRDY interrupts now that SPI is stable again
+          enableADCInterrupts();
+
+          if (hasSerial) Serial.println("TCP connected. Entering CONNECTED state.");
+      } else {
+          if (hasSerial) Serial.println("TCP connect failed, will retry...");
+          // stay in CONNECTING
+      }
+  } else {
+      if (hasSerial) Serial.println("\nWiFi association failed, backing off...");
+  }
 }
 
 void monitorConnection() {
   static unsigned long lastCheck = 0;
   unsigned long now = millis();
-  if (now - lastCheck >= WiFi_CHECK_INTERVAL_MS) {
-    lastCheck = now;
-    if (WiFi.status() != WL_CONNECTED || !client.connected()) {
-      client.stop();
-      WiFiState = CONNECTING;
-      if (hasSerial) Serial.println("WiFi or TCP disconnected. Returning to CONNECTING state.");
-    }
+
+  if (now - lastCheck < WiFi_CHECK_INTERVAL_MS) return;
+  lastCheck = now;
+
+  if (WiFi.status() != WL_CONNECTED || !client.connected()) {
+    client.stop();
+    disableADCInterrupts();
+    WiFiState = CONNECTING;
+    g_isConnected = false;
+    if (hasSerial) Serial.println("WiFi or TCP disconnected. Returning to CONNECTING state.");
   }
 }
 
@@ -269,6 +335,353 @@ uint16_t compute_crc_fast(const uint8_t* data, size_t len) {
     crc = crc_table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
   }
   return crc;
+}
+
+// ========== ICB FUNCTIONS ==========
+void IRAM_ATTR handleDrdyA() {
+  const int i = 0;                          // Array index of sensor
+  unsigned long interrupt_time = micros();  // Record the time the ADC value was reported by DRDY interrupt pin. 
+                                            // Technically the time when the interrupt is processed, as interrupts on same core of same priority form queue
+  // Open SPI with sensor's ADS1220 chip/module
+  SPI.beginTransaction(sensorSPI_ICB);       // Get SPI open with settings
+  digitalWrite(A_CS_PIN, LOW);              // Select particular sensor (cs='chip select')
+  //delayMicroseconds(1);                     // Allow ADS1220 module to accept connection (50ns on datasheet)
+  // Retrieve 3 byte (24-bit) ADC result
+  byte SPI_Buf[3];                          // temporary local buffer to work with raw result before storing integer value
+  SPI_Buf[0] = SPI.transfer(0);             // Send dummy 0x00 byte on MOSI and receive one conversion byte on MISO
+  SPI_Buf[1] = SPI.transfer(0);
+  SPI_Buf[2] = SPI.transfer(0);
+  //delayMicroseconds(1);                     // Allow communication to finish
+  // Close SPI
+  digitalWrite(A_CS_PIN, HIGH);             // Release sensor from SPI
+  SPI.endTransaction();                     // Release Nano's SPI bus
+
+  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2]; // Assemble 3 bytes into single 24-bit object (using 32-bit datatype)
+  int32_t val = (bits24 << 8) >> 8;                                          // Sign-extend 24-bit to 32-bit. Copy sign bit 23 to bits 31-24 
+
+  // ADS1220 can only store one value, so manually switch and track between channels
+  if (current_channels[i] == 0) {
+    raw_values[i][0] = val;
+    adcs[i].select_mux_channels(MUX_AIN2_AIN3);
+    current_channels[i] = 1;
+  } 
+  else {
+    raw_values[i][1] = val;
+    adcs[i].select_mux_channels(MUX_AIN0_AIN1);
+    current_channels[i] = 0;
+
+    // When second channel is read, record time and mark sensor's bit in bitmask as ready (1)
+    timestamps[i] = interrupt_time - time_init;
+    ready_mask |= (1 << i);
+  }
+}
+
+void IRAM_ATTR handleDrdyB() {
+  const int i = 1;
+  unsigned long interrupt_time = micros();
+  SPI.beginTransaction(sensorSPI_ICB);
+  digitalWrite(B_CS_PIN, LOW);
+  //delayMicroseconds(1);
+  byte SPI_Buf[3];
+  SPI_Buf[0] = SPI.transfer(0);
+  SPI_Buf[1] = SPI.transfer(0);
+  SPI_Buf[2] = SPI.transfer(0);
+  //delayMicroseconds(1);
+  digitalWrite(B_CS_PIN, HIGH);
+  SPI.endTransaction();
+
+  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2];
+  int32_t val = (bits24 << 8) >> 8;
+
+  if (current_channels[i] == 0) {
+    raw_values[i][0] = val;
+    adcs[i].select_mux_channels(MUX_AIN2_AIN3);
+    current_channels[i] = 1;
+  } 
+  else {
+    raw_values[i][1] = val;
+    adcs[i].select_mux_channels(MUX_AIN0_AIN1);
+    current_channels[i] = 0;
+    timestamps[i] = interrupt_time - time_init;
+    ready_mask |= (1 << i);
+  }
+}
+
+void IRAM_ATTR handleDrdyC() {
+  const int i = 2;
+  unsigned long interrupt_time = micros();
+  SPI.beginTransaction(sensorSPI_ICB);
+  digitalWrite(C_CS_PIN, LOW);
+  //delayMicroseconds(1);
+  byte SPI_Buf[3];
+  SPI_Buf[0] = SPI.transfer(0);
+  SPI_Buf[1] = SPI.transfer(0);
+  SPI_Buf[2] = SPI.transfer(0);
+  //delayMicroseconds(1);
+  digitalWrite(C_CS_PIN, HIGH);
+  SPI.endTransaction();
+
+  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2];
+  int32_t val = (bits24 << 8) >> 8;
+
+  if (current_channels[i] == 0) {
+    raw_values[i][0] = val;
+    adcs[i].select_mux_channels(MUX_AIN2_AIN3);
+    current_channels[i] = 1;
+  } 
+  else {
+    raw_values[i][1] = val;
+    adcs[i].select_mux_channels(MUX_AIN0_AIN1);
+    current_channels[i] = 0;
+    timestamps[i] = interrupt_time - time_init;
+    ready_mask |= (1 << i);
+  }
+}
+
+void IRAM_ATTR handleDrdyD() {
+  const int i = 3;
+  unsigned long interrupt_time = micros();
+  SPI.beginTransaction(sensorSPI_ICB);
+  digitalWrite(D_CS_PIN, LOW);
+  //delayMicroseconds(1);
+  byte SPI_Buf[3];
+  SPI_Buf[0] = SPI.transfer(0);
+  SPI_Buf[1] = SPI.transfer(0);
+  SPI_Buf[2] = SPI.transfer(0);
+  //delayMicroseconds(1);
+  digitalWrite(D_CS_PIN, HIGH);
+  SPI.endTransaction();
+
+  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2];
+  int32_t val = (bits24 << 8) >> 8;
+
+  if (current_channels[i] == 0) {
+    raw_values[i][0] = val;
+    adcs[i].select_mux_channels(MUX_AIN2_AIN3);
+    current_channels[i] = 1;
+  } 
+  else {
+    raw_values[i][1] = val;
+    adcs[i].select_mux_channels(MUX_AIN0_AIN1);
+    current_channels[i] = 0;
+    timestamps[i] = interrupt_time - time_init;
+    ready_mask |= (1 << i);
+  }
+}
+
+void IRAM_ATTR handleDrdyE() {
+  const int i = 4;
+  unsigned long interrupt_time = micros();
+  SPI.beginTransaction(sensorSPI_ICB);
+  digitalWrite(E_CS_PIN, LOW);
+  //delayMicroseconds(1);
+  byte SPI_Buf[3];
+  SPI_Buf[0] = SPI.transfer(0);
+  SPI_Buf[1] = SPI.transfer(0);
+  SPI_Buf[2] = SPI.transfer(0);
+  //delayMicroseconds(1);
+  digitalWrite(E_CS_PIN, HIGH);
+  SPI.endTransaction();
+
+  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2];
+  int32_t val = (bits24 << 8) >> 8;
+
+  if (current_channels[i] == 0) {
+    raw_values[i][0] = val;
+    adcs[i].select_mux_channels(MUX_AIN2_AIN3);
+    current_channels[i] = 1;
+  } 
+  else {
+    raw_values[i][1] = val;
+    adcs[i].select_mux_channels(MUX_AIN0_AIN1);
+    current_channels[i] = 0;
+    timestamps[i] = interrupt_time - time_init;
+    ready_mask |= (1 << i);
+  }
+}
+
+void IRAM_ATTR handleDrdyF() {
+  const int i = 5;
+  unsigned long interrupt_time = micros();
+  SPI.beginTransaction(sensorSPI_ICB);
+  digitalWrite(F_CS_PIN, LOW);
+  //delayMicroseconds(1);
+  byte SPI_Buf[3];
+  SPI_Buf[0] = SPI.transfer(0);
+  SPI_Buf[1] = SPI.transfer(0);
+  SPI_Buf[2] = SPI.transfer(0);
+  //delayMicroseconds(1);
+  digitalWrite(F_CS_PIN, HIGH);
+  SPI.endTransaction();
+
+  long bits24 = (long)SPI_Buf[0] << 16 | (long)SPI_Buf[1] << 8 | SPI_Buf[2];
+  int32_t val = (bits24 << 8) >> 8;
+
+  if (current_channels[i] == 0) {
+    raw_values[i][0] = val;
+    adcs[i].select_mux_channels(MUX_AIN2_AIN3);
+    current_channels[i] = 1;
+  } 
+  else {
+    raw_values[i][1] = val;
+    adcs[i].select_mux_channels(MUX_AIN0_AIN1);
+    current_channels[i] = 0;
+    timestamps[i] = interrupt_time - time_init;
+    ready_mask |= (1 << i);
+  }
+}
+
+// Broadcast a command to all active sensors
+void broadcast_command(uint8_t cmd) {
+  // Lower all CS pins for the active sensors to broadcast the command to all chips.
+  // We loop only over NUM_SENSORS to avoid affecting unused pins.
+  SPI.beginTransaction(sensorSPI_ICB);
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    digitalWrite(all_configs[i].cs_pin, LOW);
+  }
+  SPI.transfer(cmd);  // Send the command to all sensors at once
+  // Raise all CS pins for active sensors
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    digitalWrite(all_configs[i].cs_pin, HIGH);
+  }
+  SPI.endTransaction();
+}
+
+// Disable interrupts for sensor DRDY pins
+void disableADCInterrupts() {
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    detachInterrupt(digitalPinToInterrupt(all_configs[i].drdy_pin));
+  }
+}
+
+// Enable interrupts for sensor DRDY pinsready_mask
+void enableADCInterrupts() {
+  void (*isrHandlers[MAX_SENSORS])() = {handleDrdyA, handleDrdyB, handleDrdyC, handleDrdyD, handleDrdyE, handleDrdyF};
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    attachInterrupt(digitalPinToInterrupt(all_configs[i].drdy_pin), isrHandlers[i], FALLING);
+  }
+}
+
+// Reset and reconfigure all ADCs, reset time_init
+void initializeADCs() {
+  // Broadcast RESET to all active sensors
+  broadcast_command(RESET);
+  delay(10);  // Short delay for reset to take effect (per datasheet)
+
+  // Detach interrupts before re-attaching
+  disableADCInterrupts();
+
+  // ADS1220 initialization
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    adcs[i].begin(all_configs[i].cs_pin, all_configs[i].drdy_pin);
+    adcs[i].set_OperationMode(MODE_TURBO);
+    adcs[i].set_data_rate(dr_code);
+    adcs[i].PGA_ON();
+    adcs[i].set_pga_gain(PGA_GAIN_128);
+    adcs[i].set_VREF(VREF_ANALOG);
+    adcs[i].set_conv_mode_continuous();
+    adcs[i].select_mux_channels(MUX_AIN0_AIN1);
+    current_channels[i] = 0;
+
+    if (hasSerial) {
+      Serial.print("Setup complete for Sensor [enumerated as: "); Serial.print(i); Serial.println("]");
+      Serial.print("CS: "); Serial.print(all_configs[i].cs_pin); 
+      Serial.print(" DRDY: "); Serial.println(all_configs[i].drdy_pin);
+    }
+    delay(100);
+  }
+  if (hasSerial) Serial.println("Starting datastream from sensors");
+
+  // Allow settling
+  delay(100);               
+
+  // Staggered START: Evenly space within one conversion cycle
+  uint16_t turbo_sps = 0;
+  switch (dr_code) {
+    case DR_20SPS: turbo_sps = 40; break;
+    case DR_45SPS: turbo_sps = 90; break;
+    case DR_90SPS: turbo_sps = 180; break;
+    case DR_175SPS: turbo_sps = 350; break;
+    case DR_330SPS: turbo_sps = 660; break;
+    case DR_600SPS: turbo_sps = 1200; break;
+    case DR_1000SPS: turbo_sps = 2000; break;
+    default: 
+      if (hasSerial) Serial.println("Invalid DR (data rate) code; using default 180 SPS");
+      turbo_sps = 180;
+  }
+  unsigned long period_us = 1000000UL / turbo_sps;  // Conversion period in µs
+  unsigned long stagger_us = period_us / NUM_SENSORS;  // time delay for n sensors
+
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    adcs[i].Start_Conv();
+    if (i < NUM_SENSORS - 1) {
+      delayMicroseconds(stagger_us);
+    }
+  }
+
+  // Set time=0 for datastream after letting ADS1220 modules stabilize
+  delay(50);
+  enableADCInterrupts();
+}
+
+// Check if all data pairs are ready for this cycle
+bool checkICB_AllDataReady() {
+  uint8_t all_ready_mask = (1U << NUM_SENSORS) - 1;  // Local compile-time constant. Stored in CPU stack for compare, not created in and read from RAM.
+  if (ready_mask == all_ready_mask) {
+    ready_mask = 0;   // reset all bits in the mask to 0
+    return true;
+  }
+  return false;
+}
+
+// ====================== queueDataPacket_ICB  ======================
+// Initializes single packet array, builds payload, computes CRC over payload, builds header
+// Then loads completed single packet into data queue (global circular buffer array) under mutex lock
+// TODO - Finish adjusting packet construstion to match ICB payload given NUM_SENSORS. Also use correct bufferMutex
+void queueDataPacket_ICB() {
+    if (!g_isConnected) return;
+
+    uint8_t packet[PACKET_SIZE_ICB];
+    uint8_t* p = packet + HEADER_SIZE_ICB;  // point past the 3-byte header we will fill later
+
+    // Nano ID (uint8) — host uses this to route to the correct DataReceiverWriter
+    *p++ = NANO_ID;
+
+    // Per-sensor: uint32_t timestamp_us (relative), int32_t raw_ch1, int32_t raw_ch2
+    // We write the already sign-extended int32_t values that the ISRs put into raw_values[][].
+    for (int i=0; i<NUM_SENSORS; i++) {
+      // Timestamp captured in handleDrdy* when the second channel of the pair became ready
+      *(uint32_t*)p = (uint32_t)timestamps[i];
+      p += sizeof(uint32_t);
+
+      // Channel 1 (AIN0-AIN1)
+      *(uint32_t*)p = (uint32_t)raw_values[i][0];
+      p += sizeof(uint32_t);
+
+      // Channel 2 (AIN2-AIN3)
+      *(uint32_t*)p = (uint32_t)raw_values[i][1];
+      p += sizeof(uint32_t);
+    }
+
+    // CRC over payload
+    uint16_t crc = compute_crc_fast(packet + HEADER_SIZE_ICB, PAYLOAD_SIZE_ICB);
+
+    // Header
+    packet[0] = static_cast<uint8_t>(PAYLOAD_SIZE_ICB);
+    packet[1] = crc & 0xFF;
+    packet[2] = (crc >> 8) & 0xFF;
+
+    // Enqueue under mutex (critical section kept minimal)
+    if (xSemaphoreTake(bufferMutex_ICB, portMAX_DELAY) == pdTRUE) {
+        if (q_ICB_count >= MAX_PACKETS_ICB) {
+            q_ICB_tail = (q_ICB_tail + 1) % MAX_PACKETS_ICB;
+            q_ICB_count--;
+        }
+        memcpy(packet_pool_ICB[q_ICB_head], packet, PACKET_SIZE_ICB);
+        q_ICB_head = (q_ICB_head + 1) % MAX_PACKETS_ICB;
+        q_ICB_count++;
+        xSemaphoreGive(bufferMutex_ICB);
+    }
 }
 
 // ====================== Output.Data.Rate AND Full.Scale.-RANGE SELECTION HELPERS (DATASHEET DRIVEN) ======================
@@ -360,7 +773,7 @@ uint8_t selectMagFS_Bits(uint8_t target_gauss) {
 
 // ====================== CHIP BRING-UP ======================
 
-void bringup_IMU() {
+bool bringup_IMU() {
   Serial.print("Checking ISM330DHCX WHO_AM_I ... ");
 
   uint8_t whoami_val = 0;
@@ -380,10 +793,10 @@ void bringup_IMU() {
   }
 
   if (!id_ok) {
-      Serial.println("FAILED (expected 0x6B)");
-      Serial.printf("Got: 0b%08b / 0x%02X\n", whoami_val, whoami_val);
-      Serial.println("Stopping execution. Manually restart microcontroller.");
-      while (true) delay(100);   // Halt on critical bringup failure
+    Serial.println("FAILED (expected 0x6B)");
+    Serial.printf("Got: 0b%08b / 0x%02X\n", whoami_val, whoami_val);
+    Serial.println("Continuing without IMU/MAG functionality.");
+    return false;
   }
 
   Serial.println("OK (0x6B)");
@@ -409,9 +822,11 @@ void bringup_IMU() {
 
   Serial.printf("IMU configured: target=%u Hz → actual ODR bits=0x%X (see datasheet Table 43/46)\n",
                 TARGET_IMU_RATE_HZ, odr_bits);
+
+  return true;
 }
 
-void bringup_MAG() {
+bool bringup_MAG() {
   Serial.print("Checking LIS3MDL WHO_AM_I ... ");
 
   uint8_t whoami_val = 0;
@@ -430,10 +845,10 @@ void bringup_MAG() {
   }
 
   if (!id_ok) {
-      Serial.println("FAILED (expected 0x3D)");
-      Serial.printf("Got: 0b%08b / 0x%02X\n", whoami_val, whoami_val);
-      Serial.println("Stopping execution. Manually restart microcontroller.");
-      while (true) delay(100);   // Halt on critical bringup failure
+    Serial.println("FAILED (expected 0x3D)");
+    Serial.printf("Got: 0b%08b / 0x%02X\n", whoami_val, whoami_val);
+    Serial.println("Continuing without IMU/MAG functionality.");
+    return false;
   }
 
   Serial.println("OK (0x3D)");
@@ -457,6 +872,8 @@ void bringup_MAG() {
 
   Serial.printf("MAG configured: target=%u Hz → CTRL_REG1=0x%02X (see datasheet Table 19)\n",
                 TARGET_MAG_RATE_HZ, ctrl1_val);
+
+  return true;
 }
 
 // ====================== LOW-LEVEL SPI HELPERS ======================
@@ -567,15 +984,15 @@ void queueDataPacket_IMU_MAG(uint32_t timestamp_us,
     packet[2] = (crc >> 8) & 0xFF;
 
     // Enqueue under mutex (critical section kept minimal)
-    if (xSemaphoreTake(bufferMutex, portMAX_DELAY) == pdTRUE) {
-        if (q_count >= MAX_PACKETS_IMU) {
-            q_tail = (q_tail + 1) % MAX_PACKETS_IMU;
-            q_count--;
+    if (xSemaphoreTake(bufferMutex_IMU, portMAX_DELAY) == pdTRUE) {
+        if (q_IMU_count >= MAX_PACKETS_IMU) {
+            q_IMU_tail = (q_IMU_tail + 1) % MAX_PACKETS_IMU;
+            q_IMU_count--;
         }
-        memcpy(packet_pool[q_head], packet, PACKET_SIZE_IMU);
-        q_head = (q_head + 1) % MAX_PACKETS_IMU;
-        q_count++;
-        xSemaphoreGive(bufferMutex);
+        memcpy(packet_pool_IMU[q_IMU_head], packet, PACKET_SIZE_IMU);
+        q_IMU_head = (q_IMU_head + 1) % MAX_PACKETS_IMU;
+        q_IMU_count++;
+        xSemaphoreGive(bufferMutex_IMU);
     }
 }
 
@@ -584,66 +1001,79 @@ void queueDataPacket_IMU_MAG(uint32_t timestamp_us,
 // Optimized for minimum execution time while preserving correctness under producer interference.
 bool sendQueuedDataTCP() {
     if (!client.connected()) return false;
-    if (q_count == 0) return true;
+    // if (q_IMU_count == 0) return true;
 
-    size_t snapshot_tail = 0;
-    size_t total_packets = 0;
-    size_t total_bytes = 0;
+    // === 1. Snapshot current buffer indices and optimistic advance indices under lock ===
+    size_t snapshot_tail_imu = 0;
+    size_t total_packets_imu = 0;
+    size_t total_bytes_imu = 0;
+    if (xSemaphoreTake(bufferMutex_IMU, portMAX_DELAY) == pdTRUE) {
+      // Capture the work we are about to do
+      snapshot_tail_imu = q_IMU_tail;
+      total_packets_imu = q_IMU_count;
+      total_bytes_imu = total_packets_imu * PACKET_SIZE_IMU;
 
-    // === 1. Snapshot under lock (keep this section as short as possible) ===
-    if (xSemaphoreTake(bufferMutex, portMAX_DELAY) == pdTRUE) {
-        if (q_count == 0) {
-            xSemaphoreGive(bufferMutex);
-            return true;
-        }
-        snapshot_tail = q_tail;
-        total_packets = q_count;
-        total_bytes = total_packets * PACKET_SIZE_IMU;
-        xSemaphoreGive(bufferMutex);
+      // Optimistic commit — advance the consumer pointers NOW
+      q_IMU_tail = (snapshot_tail_imu + total_packets_imu) % MAX_PACKETS_IMU;
+      q_IMU_count -= total_packets_imu;
+
+      xSemaphoreGive(bufferMutex_IMU);
+    }
+
+    // Same for ICB sensors
+    size_t snapshot_tail_icb = 0;
+    size_t total_packets_icb = 0;
+    size_t total_bytes_icb = 0;
+    if (xSemaphoreTake(bufferMutex_ICB, portMAX_DELAY) == pdTRUE) {
+      snapshot_tail_icb = q_ICB_tail;
+      total_packets_icb = q_ICB_count;
+      total_bytes_icb = total_packets_icb * PACKET_SIZE_ICB;
+
+      q_ICB_tail = (snapshot_tail_icb + total_packets_icb) % MAX_PACKETS_ICB;
+      q_ICB_count -= total_packets_icb;
+
+      xSemaphoreGive(bufferMutex_ICB);
     }
 
     // === 2. Perform TCP write(s) OUTSIDE the mutex ===
     // We may need to split across the ring buffer wrap point.
-    size_t first_chunk = min(total_packets, MAX_PACKETS_IMU - snapshot_tail);
-    size_t bytes_first = first_chunk * PACKET_SIZE_IMU;
-    size_t bytes_second = total_bytes - bytes_first;
+    size_t first_chunk_imu = min(total_packets_imu, MAX_PACKETS_IMU - snapshot_tail_imu);
+    size_t bytes_first_imu = first_chunk_imu * PACKET_SIZE_IMU;
+    size_t bytes_second_imu = total_bytes_imu - bytes_first_imu;
 
-    size_t written = client.write(packet_pool[snapshot_tail], bytes_first);
-    if (written != bytes_first) {
-        if (hasSerial) Serial.println("Partial write on first segment");
-        return false;
+    size_t written_imu = client.write(packet_pool_IMU[snapshot_tail_imu], bytes_first_imu);
+    if (written_imu != bytes_first_imu) {
+      if (hasSerial) Serial.println("Partial IMU write on first segment");
+      return false;
+    }
+    if (bytes_second_imu > 0) {
+      written_imu = client.write(packet_pool_IMU[0], bytes_second_imu);   // wrap: start from beginning of pool
+      if (written_imu != bytes_second_imu) {
+        if (hasSerial) Serial.println("Partial IMU write on wrap segment");
+          return false;
+      }
     }
 
-    if (bytes_second > 0) {
-        written = client.write(packet_pool[0], bytes_second);   // wrap: start from beginning of pool
-        if (written != bytes_second) {
-            if (hasSerial) Serial.println("Partial write on wrap segment");
-            return false;
-        }
-    }
+    // same for ICB sensors
+    size_t first_chunk_icb = min(total_packets_icb, MAX_PACKETS_ICB - snapshot_tail_icb);
+    size_t bytes_first_icb = first_chunk_icb * PACKET_SIZE_ICB;
+    size_t bytes_second_icb = total_bytes_icb - bytes_first_icb;
 
-    // === 3. Single commit under lock (reduced from two separate commits) ===
-    if (xSemaphoreTake(bufferMutex, portMAX_DELAY) == pdTRUE) {
-        // Always advance by what we successfully sent.
-        // If the producer overwrote packets while we were writing, we still advance.
-        // This prevents retransmitting stale data (desired behavior for high-rate streaming).
-        if (q_tail == snapshot_tail) {
-            // Normal case — no interference
-            q_tail = (snapshot_tail + total_packets) % MAX_PACKETS_IMU;
-            q_count -= total_packets;
-        } else {
-            // Interference occurred. Advance anyway to avoid sending overwritten data.
-            if (hasSerial) {
-                Serial.println("WARNING: Producer overwrote packets during TCP send — advancing anyway");
-            }
-            q_tail = (snapshot_tail + total_packets) % MAX_PACKETS_IMU;
-            q_count = (q_count > total_packets) ? (q_count - total_packets) : 0;
-        }
-        xSemaphoreGive(bufferMutex);
+    size_t written_icb = client.write(packet_pool_ICB[snapshot_tail_icb], bytes_first_icb);
+    if (written_icb != bytes_first_icb) {
+      if (hasSerial) Serial.println("Partial ICB write on first segment");
+      return false;
+    }
+    if (bytes_second_icb > 0) {
+      written_icb = client.write(packet_pool_ICB[0], bytes_second_icb);   // wrap: start from beginning of pool
+      if (written_icb != bytes_second_icb) {
+        if (hasSerial) Serial.println("Partial ICB write on wrap segment");
+          return false;
+      }
     }
 
     // Occasional flush for very large batches (reduces latency on the wire)
-    if (total_packets > 200) {
+    if (total_packets_imu > 200) {
         client.flush();
     }
 
@@ -660,9 +1090,9 @@ void IRAM_ATTR batch_timer_callback(void* arg) {
 }
 
 // ====================== SAMPLING TIMER CALLBACK ======================
-void IRAM_ATTR sampling_timer_callback(void* arg) {
+void IRAM_ATTR samplingTimer_IMU_callback(void* arg) {
     BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-    xSemaphoreGiveFromISR(samplingSemaphore, &xHigherPriorityTaskWoken);
+    xSemaphoreGiveFromISR(samplingSemaphore_IMU, &xHigherPriorityTaskWoken);
     if (xHigherPriorityTaskWoken) {
         portYIELD_FROM_ISR();
     }
@@ -678,12 +1108,13 @@ void SamplingTask(void *pvParameters) {
     // 3000 / 1000 = 3 → MAG runs at its target rate with almost zero overhead.
     static uint32_t mag_sample_count = 0;
 
-    // Decision: Block on samplingSemaphore (given by esp_timer ISR).
+    // Decision: Block on samplingSemaphore_IMU (given by esp_timer ISR).
     // Intent: The hardware timer now *is* the rate source. Task only runs when
-    // a real sample is due. Timeout is just a safety net (rarely triggers).
+    // a real sample is due. Timeout (pdMS) is just a safety net (rarely triggers).
     for (;;) {
-        if (xSemaphoreTake(samplingSemaphore, pdMS_TO_TICKS(2)) == pdTRUE) {
+        if (xSemaphoreTake(samplingSemaphore_IMU, pdMS_TO_TICKS(2)) == pdTRUE) {
             if (g_isConnected) {
+              if (imu_mag_present) {
                 // === IMU sample (always happens at hardware-timed rate) ===
                 uint32_t timestamp_us = (uint32_t)(esp_timer_get_time() - time_init);   // cast is safe; we only ever send the low 32 bits
 
@@ -704,6 +1135,12 @@ void SamplingTask(void *pvParameters) {
                 queueDataPacket_IMU_MAG(timestamp_us,
                                         gx, gy, gz, ax, ay, az,
                                         latched_mx, latched_my, latched_mz);
+              }
+
+              // === ICB sensors sample
+              if (checkICB_AllDataReady()) {
+                queueDataPacket_ICB();
+              }
             }
         }
     }
@@ -732,9 +1169,6 @@ void NetworkTask(void *pvParameters) {
                 if (now - lastCheck >= WiFi_CHECK_INTERVAL_MS) {
                     lastCheck = now;
                     monitorConnection();
-                    if (WiFiState != CONNECTED) {
-                        g_isConnected = false;
-                    }
                 }
                 break;
             }
@@ -744,123 +1178,129 @@ void NetworkTask(void *pvParameters) {
 
 // ====================== SETUP (creates tasks and supporting objects) ======================
 void setup() {
-    Serial.begin(1000000);
-    unsigned long startTime = millis();
-    while (!Serial && (millis() - startTime < 5000)) {}
-    hasSerial = Serial;
+  Serial.begin(1000000);
+  unsigned long startTime = millis();
+  while (!Serial && (millis() - startTime < 5000)) {}
+  hasSerial = Serial;
+  delay(500);
 
-    if (hasSerial) {
-        Serial.println("\n\nSerial connected for debugging");
-        Serial.print("Nano_ID: "); Serial.println(NANO_ID);
-        Serial.println("╔═══════════════════════════════════════════════════════════════════════╗");
-        Serial.println("║   9-DOF High-Rate Binary Polling  —  MULTI-TASK REFACTORED            ║");
-        Serial.println("╚═══════════════════════════════════════════════════════════════════════╝");
-    }
+  if (hasSerial) {
+      Serial.println("\n\nSerial connected for debugging");
+      Serial.print("Nano_ID: "); Serial.println(NANO_ID);
+      Serial.println("╔═══════════════════════════════════════════════════════════════════════╗");
+      Serial.println("║   9-DOF High-Rate Binary Polling  —  MULTI-TASK REFACTORED            ║");
+      Serial.println("╚═══════════════════════════════════════════════════════════════════════╝");
+  }
 
-    SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
-    init_crc_table();
-    pinMode(IMU_CS_PIN, OUTPUT);
-    pinMode(MAG_CS_PIN, OUTPUT);
-    digitalWrite(IMU_CS_PIN, HIGH);
-    digitalWrite(MAG_CS_PIN, HIGH);
-    delay(100);
+  SPI.begin(SPI_SCK, SPI_MISO, SPI_MOSI);
+  init_crc_table();
+  pinMode(IMU_CS_PIN, OUTPUT);
+  pinMode(MAG_CS_PIN, OUTPUT);
+  digitalWrite(IMU_CS_PIN, HIGH);
+  digitalWrite(MAG_CS_PIN, HIGH);
+  delay(100);
 
-    // WiFi Station mode setup
-    if (hasSerial) {
-        Serial.println("Starting station mode. Arduino is WiFi client looking for following network...");
-        Serial.print("SSID: "); Serial.print(ssid);
-        Serial.print(". Password: "); Serial.println(password);
-        Serial.println("Scanning for available networks...");
-    }
+  // WiFi Station mode setup
+  if (hasSerial) {
+      Serial.println("Starting station mode. Arduino is WiFi client looking for following network...");
+      Serial.print("SSID: "); Serial.print(ssid);
+      Serial.print(". Password: "); Serial.println(password);
+      Serial.println("Scanning for available networks...");
+  }
 
-    WiFi.mode(WIFI_STA);
-    WiFi.setSleep(false);
-    int n = WiFi.scanNetworks();
-    Serial.println("WiFi network scan done. Listing networks...");
-    if (n == 0) {
-        Serial.println("No networks found");
-    } else {
-        for (int i = 0; i < n; ++i) {
-        Serial.print(WiFi.SSID(i));
-        Serial.print(" (");
-        Serial.print(WiFi.RSSI(i));
-        Serial.print(" dBm)");
-        Serial.print(" (");
-        Serial.print(WiFi.encryptionType(i), HEX);
-        Serial.print(")");
-        Serial.println();
-        }
-    }
+  WiFi.mode(WIFI_STA);
+  WiFi.setSleep(false);
+  int n = WiFi.scanNetworks();
+  Serial.println("WiFi network scan done. Listing networks...");
+  if (n == 0) {
+      Serial.println("No networks found");
+  } else {
+      for (int i = 0; i < n; ++i) {
+      Serial.print(WiFi.SSID(i));
+      Serial.print(" (");
+      Serial.print(WiFi.RSSI(i));
+      Serial.print(" dBm)");
+      Serial.print(" (");
+      Serial.print(WiFi.encryptionType(i), HEX);
+      Serial.print(")");
+      Serial.println();
+      }
+  }
 
-    bringup_IMU();
-    bringup_MAG();
+  // Initialize various chips
+  initializeADCs();
+  disableADCInterrupts();
+  bool imu_ok = bringup_IMU();
+  bool mag_ok = bringup_MAG();
+  imu_mag_present = imu_ok && mag_ok;
 
-    // ====================== CREATE RTOS OBJECTS ======================
-    if (hasSerial) Serial.println("\nStarting RTOS tasks...");
+  // ====================== CREATE RTOS OBJECTS ======================
+  if (hasSerial) Serial.println("\nStarting RTOS tasks...");
 
-    bufferMutex = xSemaphoreCreateMutex();
-    batchSemaphore = xSemaphoreCreateBinary();
-    if (hasSerial) Serial.println("\tFinished MUTEX and Semaphore.");
+  bufferMutex_IMU = xSemaphoreCreateMutex();
+  bufferMutex_ICB = xSemaphoreCreateMutex();
+  batchSemaphore = xSemaphoreCreateBinary();
+  if (hasSerial) Serial.println("\tFinished MUTEX and Semaphore.");
 
-    // Decision: Dedicated periodic esp_timer for batch rhythm (user choice).
-    // Intent: Clean separation of timing source from task scheduling.
-    esp_timer_create_args_t timer_args = {
-        .callback = &batch_timer_callback,
-        .arg = NULL,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "batch_timer"
-    };
-    esp_timer_create(&timer_args, &batch_timer);
-    esp_timer_start_periodic(batch_timer, BATCH_SEND_INTERVAL_MS * 1000ULL);
-    if (hasSerial) Serial.println("\tFinished batch timer interrupt.");
+  // Decision: Dedicated periodic esp_timer for batch rhythm (user choice).
+  // Intent: Clean separation of timing source from task scheduling.
+  esp_timer_create_args_t timer_args = {
+      .callback = &batch_timer_callback,
+      .arg = NULL,
+      .dispatch_method = ESP_TIMER_TASK,
+      .name = "batch_timer"
+  };
+  esp_timer_create(&timer_args, &batch_timer);
+  esp_timer_start_periodic(batch_timer, BATCH_SEND_INTERVAL_MS * 1000ULL);
+  if (hasSerial) Serial.println("\tFinished WiFi batch timer interrupt.");
 
-    // Create high-resolution sampling timer (different approach from vTaskDelayUntil)
-    samplingSemaphore = xSemaphoreCreateBinary();
-    esp_timer_create_args_t sampling_timer_args = {
-        .callback = &sampling_timer_callback,
-        .arg = NULL,
-        .dispatch_method = ESP_TIMER_TASK,
-        .name = "sampling_timer"
-    };
-    esp_timer_create(&sampling_timer_args, &sampling_timer);
-    esp_timer_start_periodic(sampling_timer, SAMPLING_TIMER_PERIOD_US);
-    if (hasSerial) Serial.println("\tFinished high-resolution sampling timer.");
+  // Create high-resolution sampling timer (different approach from vTaskDelayUntil)
+  samplingSemaphore_IMU = xSemaphoreCreateBinary();
+  esp_timer_create_args_t samplingTimer_IMU_args = {
+      .callback = &samplingTimer_IMU_callback,
+      .arg = NULL,
+      .dispatch_method = ESP_TIMER_TASK,
+      .name = "samplingTimer_IMU"
+  };
+  esp_timer_create(&samplingTimer_IMU_args, &samplingTimer_IMU);
+  esp_timer_start_periodic(samplingTimer_IMU, IMU_INTERVAL_US);
+  if (hasSerial) Serial.println("\tFinished high-resolution sampling timer.");
 
-    // ====================== CREATE TASKS (Decision: pinned + priorities) ======================
-    // Decision: SamplingTask pinned to core 1 (high prio), NetworkTask to core 0.
-    // Intent: Better WiFi stack affinity on core 0; SamplingTask isolated on core 1.
-    
-    // SamplingTask — high priority, pinned to core 1 (away from WiFi)
-    if (xTaskCreatePinnedToCore(
-            SamplingTask,
-            "SamplingTask",
-            6144,
-            NULL,
-            configMAX_PRIORITIES - 3,   // Slightly higher priority than before
-            NULL,
-            1                    ) != pdPASS)
-    {
-        Serial.println("ERROR: Failed to create SamplingTask");
-        while (true) delay(100);
-    }
+  // ====================== CREATE TASKS (Decision: pinned + priorities) ======================
+  // Decision: SamplingTask pinned to core 1 (high prio), NetworkTask to core 0.
+  // Intent: Better WiFi stack affinity on core 0; SamplingTask isolated on core 1.
+  
+  // SamplingTask — high priority, pinned to core 1 (away from WiFi)
+  if (xTaskCreatePinnedToCore(
+          SamplingTask,
+          "SamplingTask",
+          6144,
+          NULL,
+          configMAX_PRIORITIES - 3,   // Slightly higher priority than before
+          NULL,
+          1                    ) != pdPASS)
+  {
+      Serial.println("ERROR: Failed to create SamplingTask");
+      while (true) delay(100);
+  }
 
-    // NetworkTask — lower priority, pinned to core 0 (WiFi affinity)
-    if (xTaskCreatePinnedToCore(
-            NetworkTask,
-            "NetworkTask",
-            6144,
-            NULL,
-            configMAX_PRIORITIES - 5,
-            NULL,
-            0                   ) != pdPASS)
-    {
-        Serial.println("ERROR: Failed to create NetworkTask");
-        while (true) delay(100);
-    }
+  // NetworkTask — lower priority, pinned to core 0 (WiFi affinity)
+  if (xTaskCreatePinnedToCore(
+          NetworkTask,
+          "NetworkTask",
+          6144,
+          NULL,
+          configMAX_PRIORITIES - 5,
+          NULL,
+          0                   ) != pdPASS)
+  {
+      Serial.println("ERROR: Failed to create NetworkTask");
+      while (true) delay(100);
+  }
 
-    if (hasSerial) Serial.println("Both tasks created. SamplingTask running at target rate.");
+  if (hasSerial) Serial.println("Both tasks created. SamplingTask running at target rate.");
 
-    // Original loop() is intentionally left to idle (user decision 1.4)
+  // Original loop() is intentionally left to idle (user decision 1.4)
 }
 
 // ====================== LOOP (now idle – replaced by dedicated tasks) ======================

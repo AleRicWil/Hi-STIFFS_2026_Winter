@@ -111,9 +111,9 @@ class Config:
         '''
 
         if sensor_type == Config.SENSOR_TYPE_ICB:
-            # 1 byte (probe_id) + 1 byte (sensor_type) + 12 bytes per sensor
-            # (4 bytes time_us {uses uint32} + 4 bytes raw1 + 4 bytes raw2)
-            return 2 + num_icb_sensors * 12
+            # 1 byte (probe_id) + 10 bytes per sensor
+            # (4 bytes time_us {uses uint32} + 3 bytes raw1 + 3 bytes raw2)
+            return 1 + num_icb_sensors * 10
         
         elif sensor_type == Config.SENSOR_TYPE_IMU_MAG:
             # 1 byte (probe_id) + 4 bytes (time_us) {uses uint32}

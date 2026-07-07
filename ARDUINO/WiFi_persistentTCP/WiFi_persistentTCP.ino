@@ -522,8 +522,8 @@ void queueDataPacket_ICB() {
   // data     - (payload)
   //          - these bytes tell what Nano sent the packet, what type of data it is, and the data itself
   
-  // Calculate packet payload length: 1 byte nano_ID + 1 byte sensor_type + num_sensors * (4 ts + 4 raw1 + 4 raw2)
-  size_t payload_len = 2 + NUM_SENSORS * 12;
+  // Calculate packet payload length: 1 byte nano_ID + num_sensors * (4 ts + 4 raw1 + 4 raw2)
+  size_t payload_len = 1 + NUM_SENSORS * 12;
 
   // Build payload separately
   std::vector<uint8_t> payload;
@@ -532,10 +532,6 @@ void queueDataPacket_ICB() {
   // Add nano_id as uint8_t
   uint8_t nano_id = atoi(NANO_ID);
   payload.push_back(nano_id);
-
-  // Add sensor_type as uint8_t
-  uint8_t sensor_type = static_cast<uint8_t>(SensorDataType::TYPE_ICB);
-  payload.push_back(sensor_type);
 
   // Per sensor: uint32_t ts_us, int32_t raw1, int32_t raw2
   for (int i = 0; i < NUM_SENSORS; i++) {
@@ -553,19 +549,13 @@ void queueDataPacket_ICB() {
   // Compute CRC over payload
   uint16_t crc = compute_crc(payload.data(), payload.size());
 
-  // Build full packet: length (2 bytes) + seq (2) + crc (2) + payload
+  // Build full packet: length (1 byte) + crc (2) + payload
   std::vector<uint8_t> packet;
-  packet.reserve(6 + payload_len);
+  packet.reserve(3 + payload_len);
 
   // Length prefix (uint16_t, little-endian)
-  uint16_t length = static_cast<uint16_t>(payload_len);
+  uint8_t length = static_cast<uint8_t>(payload_len);
   packet.push_back(static_cast<uint8_t>(length & 0xFF));
-  packet.push_back(static_cast<uint8_t>((length >> 8) & 0xFF));
-
-  // Sequence number (uint16_t, little-endian)
-  packet.push_back(static_cast<uint8_t>(seq_num & 0xFF));
-  packet.push_back(static_cast<uint8_t>((seq_num >> 8) & 0xFF));
-  seq_num++;  // Increment for next packet
 
   // CRC (uint16_t, little-endian)
   packet.push_back(static_cast<uint8_t>(crc & 0xFF));
