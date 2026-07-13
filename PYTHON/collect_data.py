@@ -1374,20 +1374,20 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: new DAQ PCB",
-        "Test Type: code testing",
+        "Note: Raw Calib",
+        "Test Type: Calibration",
         # "Stalks: Medium B-IN no tops, Probe: v3.3",
-        # "Loads (N): 5 35 70, Positions (mm): 60 100 120 154",
+        "Loads (N): 5 35 70, Positions (mm): 60 100 120 154",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_330SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
     run_collection( nano_id=[1],
-                    sensors=["A B C D E F"],
-                    sensor_sns=["001 003 005 001 004 101"],
+                    sensors=["A B C"],
+                    sensor_sns=["101 102 103"],
                     probe_height_m=[0.785],
                     header_content=[example_header_content],
                     show_raw_strains=False,
-                    imu_mode=True)
+                    imu_mode=False)
     # run_collection( nano_id=[1, 2],
     #                 sensors=["A C E", "A C E"],
     #                 sensor_sns=["001 003 005", "002 004 011"],
