@@ -15,6 +15,23 @@ from process import HiSTIFFSData
 from sensor_registry import SensorRegistry
 
 
+def _select_sensor(data, sensor_label=None):
+    """Return sensor label and serial number, defaulting to first sensor when not specified."""
+    if sensor_label is None:
+        l = data.sensor_labels[0]
+        sn = data.sensor_sns[0]
+        return l, sn
+
+    label = str(sensor_label).strip().upper()
+    if label not in data.sensor_labels:
+        raise ValueError(f"Sensor label '{label}' not found in file. Available labels: {data.sensor_labels}")
+
+    idx = data.sensor_labels.index(label)
+    l = data.sensor_labels[idx]
+    sn = data.sensor_sns[idx]
+    return l, sn
+
+
 def calculate_coefficients(summary_path, registry=None):
     """Calculate calibration coefficients using multiple linear regression to directly fit k, d, and c.
 
@@ -138,7 +155,7 @@ def calculate_coefficients(summary_path, registry=None):
         return ""
 
 
-def summary_from_dwells(collection_path):
+def summary_from_dwells(collection_path, sensor_label=None):
     '''
     Generates summary CSV from a single raw data file containing multiple dwells 
     at different loads/positions.
@@ -152,9 +169,8 @@ def summary_from_dwells(collection_path):
     if data.test_type != 'Calibration':
         raise ValueError("Input file must be a calibration type collection.")
     
-    # Extract sensor label (l) and serial number (sn)
-    sn = data.sensor_sns[0]
-    l = data.sensor_labels[0]
+    # Extract requested sensor label (l) and serial number (sn)
+    l, sn = _select_sensor(data, sensor_label=sensor_label)
     loads = data.loads
     positions = data.positions
 
@@ -298,7 +314,7 @@ def summary_from_dwells(collection_path):
     print(f"Summary CSV generated at: {calibration_path}")
 
 
-def zero_shift_correction(collection_path):
+def zero_shift_correction(collection_path, sensor_label=None):
     """
     Companion to summary_from_dwells().
     Loads a calibration raw data file, applies piecewise zero-shift correction
@@ -313,9 +329,8 @@ def zero_shift_correction(collection_path):
     if data.test_type != 'Calibration':
         raise ValueError("File must be a Calibration type collection.")
 
-    # Parse sensor label and SN (always exactly one sensor for calibration)
-    sn = data.sensor_sns[0]
-    l = data.sensor_labels[0]
+    # Parse requested sensor label and SN
+    l, sn = _select_sensor(data, sensor_label=sensor_label)
     # for row in data.header_rows:
         # if row and 'Sensor Serial#' in row[0]:
         #     parts = row[0].split(',')
@@ -496,11 +511,11 @@ if __name__ == "__main__":
     #              r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163945_01.csv']
     # generate_summary(old_paths)
 
-    path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-06-16\2026-06-16_195024_02.csv'
-    sum_path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-06-16\calibration_101.csv'
+    path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-07-13\2026-07-13_144751_01.csv'
+    sum_path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-07-13\calibration_103.csv'
 
-    # zero_shift_correction(path)
-    # summary_from_dwells(path)
+    # zero_shift_correction(path, sensor_label='C')
+    # summary_from_dwells(path, sensor_label='C')
     calculate_coefficients(sum_path)
 
     
