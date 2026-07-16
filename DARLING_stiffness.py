@@ -47,7 +47,7 @@ def process_test(file_path: str, plot_flag: bool=True) -> tuple[str, float, floa
     # row indices of various metadata 
     test_row_idx = 11
     height_row_idx = 12
-    stalk_row_idx = 18
+    stalk_row_idx = 17
 
     # get key test info from header metadata
     with open(file_path, mode='r', newline='', encoding='utf-8') as file:
@@ -92,6 +92,7 @@ def process_test(file_path: str, plot_flag: bool=True) -> tuple[str, float, floa
     # Optional display results
     if plot_flag:
         plt.figure()
+        plt.plot(displacement, load_x)
         plt.scatter(displacement, load_x, s=1)
         plt.plot(displacement, fitted_line, c='red')
         plt.title(rf'Test# - {test_num}, Stiffness - {stiffness:.2f} $N/m^2$'+f'\nStalk ID - {stalk_ID}, Height - {height} (m)')
@@ -105,7 +106,7 @@ def process_test(file_path: str, plot_flag: bool=True) -> tuple[str, float, floa
 
 if __name__ == "__main__":
     # Main execution
-    folder = r"Hi-STIFFS_2026_Winter\Raw Data\2026-04-08\DARLING_Data"
+    folder = r"Hi-STIFFS_2026_Winter\Raw Data\2026-07-13\DARLING\MED_07_13"
     csv_list = get_csv_files(folder)
     print(f"Found {len(csv_list)} CSV files.")
 
@@ -113,43 +114,40 @@ if __name__ == "__main__":
     stalk_data = defaultdict(list)
 
     for path in csv_list:
-        stalk_ID, stiffness, residual_error = process_test(path)
+        stalk_ID, stiffness, residual_error = process_test(path, plot_flag=True)
         stalk_data[stalk_ID].append((stiffness, residual_error))
         plt.show()  # Displays plot for each test (as in original script)
 
     # Select the 6 best stiffness values (lowest residual error) per stalk
-    best_stiffnesses = {}
+    stiffnesses = {}
     for stalk_ID, tests in stalk_data.items():
         if not tests:
             continue
-        # Sort by residual_error (ascending = best fits first)
-        sorted_tests = sorted(tests, key=lambda x: x[1])
-        # Take up to 6 best stiffness values
-        best_6 = [stiff for stiff, err in sorted_tests[:6]]
-        best_stiffnesses[stalk_ID] = best_6
+        stiffs = [stiff for stiff, err in tests]
+        stiffnesses[stalk_ID] = stiffs
         num_tests = len(tests)
-        print(f"Stalk {stalk_ID}: {num_tests} tests processed → selected top {len(best_6)} stiffnesses.")
+        print(f"Stalk {stalk_ID}: {num_tests} tests processed.")
 
     # Summary output
-    print("\nBest stiffness values per stalk (object ready for later work):")
-    for stalk, stiffs in sorted(best_stiffnesses.items()):
+    print("\nStiffness values per stalk (object ready for later work):")
+    for stalk, stiffs in sorted(stiffnesses.items()):
         mean_stiff = np.mean(stiffs) if stiffs else None
         print(f"  {stalk}: {stiffs} (mean: {mean_stiff:.2f} if applicable)")
 
-    # The object 'best_stiffnesses' now contains exactly what you requested:
-    # Example access: best_stiffnesses['YOUR_STALK_ID'] → list of up to 6 stiffness values
+    # 2. Pandas DataFrame + CSV (wide format, one row per stalk)
+    max_tests = max(len(stiffs) for stiffs in stiffnesses.values())
 
-    # 2. Pandas DataFrame + CSV (recommended for analysis)
     records = []
-    for stalk_ID, stiffs in best_stiffnesses.items():
-        for rank, stiffness in enumerate(stiffs, 1):
-            records.append({
-                'stalk_ID': stalk_ID,
-                'rank_by_residual_error': rank,
-                'stiffness': stiffness
-            })
+    for stalk_ID, stiffs in stiffnesses.items():
+        row = {'Stalk': stalk_ID}
+        for i in range(max_tests):
+            col_name = f'Test_{i+1:02d}'
+            row[col_name] = stiffs[i] if i < len(stiffs) else np.nan
+        records.append(row)
 
     df_best = pd.DataFrame(records)
-    df_best.to_csv('best_stiffnesses.csv', index=False)
+    df_best = df_best.sort_values('Stalk').reset_index(drop=True)
+
+    df_best.to_csv('stiffnesses.csv', index=False)
     print("\nData saved to:")
-    print("   - best_stiffnesses.csv (DataFrame format)")
+    print("   - stiffnesses.csv (DataFrame format)")
