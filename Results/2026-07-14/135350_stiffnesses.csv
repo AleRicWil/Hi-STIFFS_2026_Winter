@@ -1,0 +1,14 @@
+Note: dummy trials
+Estimation Method: quasi-static average
+Test Type: Not Calibration
+===BEGIN_STIFFNESSES===
+Stalk,Stiffness (N/m^2),Estimate 1,Estimate 2
+1,nan,nan,nan
+2,nan,nan,nan
+3,nan,nan,nan
+4,27.46159666095483,nan,27.46159666095483
+5,nan,nan,nan
+6,9.560711318769778,nan,9.560711318769778
+7,6.400048992495729,0.37505970956782325,12.425038275423635
+8,12.425038275423635,nan,12.425038275423635
+9,nan,nan,nan
