@@ -28,8 +28,8 @@ from gui import world_to_screen_hockey, draw_arrow_hockey
 
 # Display
 PIXELS_PER_METRE = 450.0
-WINDOW_WIDTH = 1100
-WINDOW_HEIGHT = 750
+WINDOW_WIDTH = 1600
+WINDOW_HEIGHT = 900
 
 
 def main() -> None:

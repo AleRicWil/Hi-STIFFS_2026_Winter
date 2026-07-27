@@ -3,7 +3,7 @@ Test Name: 2026-07-24_103017_01,yyyy-mm-dd_hhmmss_{probe#/nano_id}
 Probe ID: Nano_01,Probe Height (m): 0.8400
 Note: Field Shakedown,video
 Test Type: Field - Short Stalks,Manual Steer,50ft/s
-Stalks: X-tra Early,Probe: v3.3
+Stalks: X-tra Early,Probe: v4.0
 Analog-to-Digital Converter: ADS1220,Mode: Turbo,Data Rate: DR_330SPS,Analog Excitation/Reference Voltage: 5.1V +/-2mV
 DAQ Microcontroller: Arduino Nano ESP32,Data-stream Connection: Wi-Fi
 Number of ICB-Sensors: 3,Sensor Label(s): A B C,Sensor SNs: 101 102 103

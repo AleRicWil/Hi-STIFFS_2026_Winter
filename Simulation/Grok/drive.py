@@ -30,16 +30,17 @@ from gui import TextInput, world_to_screen_drive, draw_arrow_drive
 # ---------------------------------------------------------------------------
 # User-configurable paths & defaults (identical to original)
 # ---------------------------------------------------------------------------
-CONTOUR_CSV = r"new_profile.csv"          # relative path preferred
+dir = os.path.dirname(__file__)
+CONTOUR_CSV = os.path.join(dir, "new_profile.csv")
 
-DEFAULT_DRIVE_SPEED = 0.10       # m/s  (positive; actual velocity is -Y)
+DEFAULT_DRIVE_SPEED = 0.447*3       # m/s  (positive; actual velocity is -Y)
 DEFAULT_LATERAL_X   = -0.020     # m
 
 CONTOUR_RESAMPLE_POINTS = 1000
 
 WINDOW_WIDTH  = 1600
 WINDOW_HEIGHT = 900
-TARGET_FPS    = 60
+TARGET_FPS    = 30
 
 
 def main() -> None:

@@ -29,7 +29,7 @@ import numpy as np
 # Shared numerical defaults (contour-drive values are the reference for the
 # main design path; hockey-specific values are kept inside its resolver)
 # ---------------------------------------------------------------------------
-MASS                = 1.0
+MASS                = 2.0
 RADIUS              = 0.020
 K_SPRING            = 60.0
 B_DAMPER            = 2.5
@@ -38,15 +38,15 @@ MU_STATIC           = 0.25
 MU_KINETIC          = 0.10
 VEL_STICK_THRESHOLD = 1e-2          # used by contour-drive path
 
-PHYSICS_DT          = 1.0 / 2000.0
+PHYSICS_DT          = 1.0 / 500.0
 MAX_SUBSTEPS        = 80
-CONTACT_ITERATIONS  = 3
+CONTACT_ITERATIONS  = 1
 CONTACT_BIAS_FACTOR = 0.15
 CONTACT_SLOP        = 0.0003
 
 # Hockey-test specific (kept for exact behavioural parity)
 HOCKEY_MU_STATIC    = 0.40
-HOCKEY_MU_KINETIC   = 0.20
+HOCKEY_MU_KINETIC   = 0.20*0
 HOCKEY_VEL_STICK    = 1e-3
 HOCKEY_BIAS_FACTOR  = 0.2
 HOCKEY_SLOP         = 0.0005
@@ -284,16 +284,24 @@ def resolve_circle_contour(
     bias_factor: float = CONTACT_BIAS_FACTOR,
     slop: float = CONTACT_SLOP,
     dt: float = PHYSICS_DT,
+    window: int = 40,              # half-width of local segment window (segments)
 ) -> bool:
     """
-    Multi-contact resolution against the whole polyline.
+    Multi-contact resolution against the polyline.
 
     Performs CONTACT_ITERATIONS sequential sweeps for higher fidelity
     when several segments are active simultaneously.
 
-    Spatial culling: each segment's pre-computed AABB is tested against
-    the stalk's expanded AABB before the more expensive closest-point
-    calculation.
+    Spatial culling (two levels):
+      1. Sliding window centred on the stalk’s current y.
+         Contour points are ordered by decreasing y, so only a narrow
+         band of segments can possibly touch the stalk.
+      2. Per-segment AABB test (unchanged) for the few candidates
+         that survive the window.
+
+    window=40 covers ~80 mm of contour length – far more than the
+    stalk diameter + margin – while reducing geometric tests by
+    roughly an order of magnitude.
     """
     any_contact = False
 
@@ -304,19 +312,35 @@ def resolve_circle_contour(
     sy0 = stalk.pos[1] - r
     sy1 = stalk.pos[1] + r
 
+    n_seg = len(contour.segments)
+    if n_seg == 0:
+        return False
+
+    # ------------------------------------------------------------------
+    # Locate the centre of the sliding window (O(log N))
+    # points[:,1] is monotonically decreasing (y_max → y_min)
+    # ------------------------------------------------------------------
+    ys = contour.points[:, 1]
+    # searchsorted on the negated (hence increasing) array
+    center = int(np.searchsorted(-ys, -stalk.pos[1]))
+    center = max(0, min(center, n_seg - 1))
+
+    i_lo = max(0, center - window)
+    i_hi = min(n_seg, center + window + 1)
+
     for _ in range(contact_iterations):
-        for i, (a, b) in enumerate(contour.segments):
+        for i in range(i_lo, i_hi):
             xmin, xmax, ymin, ymax = contour.seg_aabb[i]
-            # Cheap AABB rejection
+            # Cheap AABB rejection (still useful inside the window)
             if sx1 < xmin or sx0 > xmax or sy1 < ymin or sy0 > ymax:
                 continue
+            a, b = contour.segments[i]
             if resolve_circle_static_segment(
                 stalk, a, b, restitution, mu_s, mu_k,
                 bias_factor=bias_factor, slop=slop, dt=dt,
             ):
                 any_contact = True
     return any_contact
-
 
 # ---------------------------------------------------------------------------
 # Contact resolution – circle vs. kinematic segment (exact from hockey_test)
@@ -457,7 +481,7 @@ def simulate_drive(
     mu_s: float = MU_STATIC,
     mu_k: float = MU_KINETIC,
     dt: float = PHYSICS_DT,
-    record_every: int = 10,
+    record_every: float = 0.001,
 ) -> Dict[str, np.ndarray]:
     """
     Run a complete headless stalk-contour drive and return time histories.
@@ -476,7 +500,8 @@ def simulate_drive(
     stalk.reset(origin, origin_vel)
 
     n_steps = int(duration / dt) + 1
-    n_rec = (n_steps // record_every) + 1
+    y_travel = (contour.y_max - contour.y_min) + 4.0 * radius   # generous bound
+    n_rec = int(y_travel / record_every) + 2
 
     t_hist      = np.empty(n_rec, dtype=np.float64)
     pos_x_hist  = np.empty(n_rec, dtype=np.float64)
@@ -487,9 +512,19 @@ def simulate_drive(
     acc_y_hist  = np.empty(n_rec, dtype=np.float64)
     origin_y_hist = np.empty(n_rec, dtype=np.float64)
     contact_hist = np.empty(n_rec, dtype=bool)
+    contour_x_hist = np.empty(n_rec, dtype=np.float64)
+    lag_x_hist = np.empty(n_rec, dtype=np.float64)
+    lag_y_hist = np.empty(n_rec, dtype=np.float64)
+
+    # Prepare a sorted (y, x) table once for np.interp
+    sort_idx = np.argsort(contour.points[:, 1])
+    cy = contour.points[sort_idx, 1]
+    cx = contour.points[sort_idx, 0]
 
     rec = 0
     prev_vel = stalk.vel.copy()
+    last_record_y = stalk.origin_pos[1] + record_every   # force a sample on the first step
+    last_record_step = 0
 
     for step in range(n_steps):
         # Drive the origin (identical to interactive loop)
@@ -500,23 +535,31 @@ def simulate_drive(
 
         # Multi-contact resolution
         contacted = resolve_circle_contour(
-            stalk, contour, restitution, mu_s, mu_k, dt=dt
+            stalk, contour, restitution, mu_s, mu_k, contact_iterations=CONTACT_ITERATIONS, dt=dt
         )
 
-        # Acceleration estimate (central difference on recorded points later)
-        if step % record_every == 0 and rec < n_rec:
+        if (last_record_y - stalk.origin_pos[1]) >= record_every and rec < n_rec:
             t_hist[rec] = step * dt
             pos_x_hist[rec] = stalk.pos[0]
             pos_y_hist[rec] = stalk.pos[1]
             vel_x_hist[rec] = stalk.vel[0]
             vel_y_hist[rec] = stalk.vel[1]
-            # simple forward difference for accel at record rate
-            acc = (stalk.vel - prev_vel) / (dt * record_every)
+
+            # Δt since previous recorded sample (more accurate than assuming constant spacing)
+            dt_rec = (step - last_record_step) * dt
+            acc = (stalk.vel - prev_vel) / max(dt_rec, dt)
             acc_x_hist[rec] = acc[0]
             acc_y_hist[rec] = acc[1]
+
             origin_y_hist[rec] = stalk.origin_pos[1]
+            contour_x_hist[rec] = np.interp(stalk.origin_pos[1], cy, cx)
+            lag_x_hist[rec] = abs(pos_x_hist[rec] - contour_x_hist[rec])
+            lag_y_hist[rec] = origin_y_hist[rec] - pos_y_hist[rec]
             contact_hist[rec] = contacted
+
             prev_vel = stalk.vel.copy()
+            last_record_y = stalk.origin_pos[1]
+            last_record_step = step
             rec += 1
 
         # Optional early stop once well past the contour
@@ -533,5 +576,8 @@ def simulate_drive(
         "acc_x": acc_x_hist[:rec],
         "acc_y": acc_y_hist[:rec],
         "origin_y": origin_y_hist[:rec],
-        "contact": contact_hist[:rec],
+        "contour_x": contour_x_hist[:rec],
+        "lag_x": lag_x_hist[:rec],
+        'lag_y': lag_y_hist[:rec],
+        "contact": contact_hist[:rec]
     }

@@ -1295,8 +1295,8 @@ def run_stiffness_pipeline(data: HiSTIFFSData, results_note: str='None') -> None
     data.save_stiffnesses(note=results_note)
 
 if __name__ == "__main__":
-    times = ['145917', '150013', '150101', '150203', '150243', '150604', '153345', '153501', '153636', '153738', '153844', '153949']
-    data = HiSTIFFSData(date="2026-07-21", time=times[10], debug=True)
+    times = ['095206', '101147', '102124', '103017', '103800', '165625']
+    data = HiSTIFFSData(date="2026-07-24", time=times[1 - 1], debug=True)
     if data.exists:
         data.plot_raw_strains(combined=False)
         # data.describe_channels()

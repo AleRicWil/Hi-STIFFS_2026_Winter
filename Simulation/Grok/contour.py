@@ -92,54 +92,56 @@ def load_contour_from_csv(csv_path: str) -> np.ndarray:
     return points
 
 
-def resample_contour_even_y(points: np.ndarray, n_points: int) -> np.ndarray:
+def resample_contour_even_y(points: np.ndarray, n_points: int, 
+                            y_lim: tuple[float, float] | list[float] | None = None,) -> np.ndarray:
     """
     Resample a polyline so the output points have Y-coordinates that are
-    evenly spaced between the original y_max and y_min (descending, matching
-    the -Y drive direction).
+    evenly spaced.
 
-    For each target Y the corresponding X is obtained by linear interpolation
-    on the first polyline segment that straddles that Y.  If no segment
-    crosses the target Y (possible with non-monotonic or multi-valued
-    contours), the nearest original point in Y is used as a fallback.
+    Parameters
+    ----------
+    points : (N, 2) array
+        Original contour points [x, y].
+    n_points : int
+        Desired number of output points.
+    y_lim : (y_start, y_end) or None, optional
+        If given, the n_points are placed from y_start to y_end (inclusive).
+        When None the data’s own y_max → y_min are used (original behaviour).
 
-    This produces a uniform contact-test density along the drive axis while
-    preserving the essential shape of typical stalk / cam profiles.
+    Returns
+    -------
+    (n_points, 2) array with columns [x, y], y running from the chosen
+    start limit to the end limit.
     """
     if n_points < 2 or points.shape[0] < 2:
         return points
 
     y = points[:, 1]
-    y_min = float(y.min())
-    y_max = float(y.max())
-    if abs(y_max - y_min) < 1e-12:
-        return points  # degenerate (all points at same Y)
+    data_ymin = float(y.min())
+    data_ymax = float(y.max())
+    if abs(data_ymax - data_ymin) < 1e-12:
+        return points  # degenerate
 
-    target_ys = np.linspace(y_max, y_min, n_points)
-    new_pts = np.empty((n_points, 2), dtype=np.float64)
+    # Determine the sampling interval
+    if y_lim is None:
+        y_start, y_end = data_ymax, data_ymin
+    else:
+        y_start, y_end = float(y_lim[0]), float(y_lim[1])
 
-    for i, ty in enumerate(target_ys):
-        found = False
-        for j in range(len(points) - 1):
-            y0 = points[j, 1]
-            y1 = points[j + 1, 1]
-            # Does segment [j, j+1] straddle or touch ty?
-            if (y0 - ty) * (y1 - ty) <= 0.0:
-                if abs(y1 - y0) < 1e-12:
-                    x = points[j, 0]
-                else:
-                    t = (ty - y0) / (y1 - y0)
-                    x = points[j, 0] + t * (points[j + 1, 0] - points[j, 0])
-                new_pts[i] = (x, ty)
-                found = True
-                break
-        if not found:
-            # Fallback: nearest original point in Y
-            idx = int(np.argmin(np.abs(y - ty)))
-            new_pts[i] = points[idx]
+    target_ys = np.linspace(y_start, y_end, n_points)
 
-    return new_pts
+    # Sort once so interp is well-defined
+    sort_idx = np.argsort(y)
+    y_sorted = y[sort_idx]
+    x_sorted = points[sort_idx, 0]
 
+    # Drop exact duplicate y-values (keeps interp stable)
+    keep = np.concatenate(([True], np.diff(y_sorted) > 1e-12))
+    y_sorted = y_sorted[keep]
+    x_sorted = x_sorted[keep]
+
+    x_new = np.interp(target_ys, y_sorted, x_sorted)
+    return np.column_stack((x_new, target_ys))
 
 # ---------------------------------------------------------------------------
 # Contour – static polyline (exact from stalk_contour_drive.py)
@@ -241,13 +243,39 @@ class LinearCamContour:
         return 10*tau**3 - 15*tau**4 + 6*tau**5
 
     @staticmethod
+    def poly_3456(tau: np.ndarray, tau_p: float = 0.50) -> np.ndarray:
+        """
+        6th-degree polynomial with the same end conditions as classic 3-4-5
+        (s = s' = s'' = 0 at both ends) plus one interior condition that places
+        the acceleration peak at tau_p.
+
+        tau_p = 0.5 recovers the ordinary 3-4-5 (handled by fallback).
+        tau_p > 0.5 → gentler start, steeper finish.
+        tau_p < 0.5 → steeper start, gentler finish.
+        Useful practical range ≈ 0.40 … 0.65.
+        """
+        tau = np.asarray(tau, dtype=float)
+        if abs(tau_p - 0.5) < 1e-3:
+            # classic 3-4-5
+            print('Tau_peak was too-near 0.5. Reverting from poly_3456 to poly_345')
+            return 10*tau**3 - 15*tau**4 + 6*tau**5
+
+        den = 20*tau_p**3 - 30*tau_p**2 + 12*tau_p - 1
+        a3 = 20*tau_p*(10*tau_p**2 - 12*tau_p + 3) / den
+        a4 = 15*(-20*tau_p**3 + 18*tau_p**2 - 1) / den
+        a5 = 12*(10*tau_p**3 - 9*tau_p + 2) / den
+        a6 = 10*(-6*tau_p**2 + 6*tau_p - 1) / den
+
+        return a3*tau**3 + a4*tau**4 + a5*tau**5 + a6*tau**6
+
+    @staticmethod
     def poly_4567(tau: np.ndarray) -> np.ndarray:
         """4-5-6-7 polynomial."""
         return 35*tau**4 - 84*tau**5 + 70*tau**6 - 20*tau**7
 
     def _transition(self, y: np.ndarray, y_start: float, x_start: float,
                     H: float, L: float, curve: Callable[[np.ndarray], np.ndarray],
-                    direction: int = 1) -> np.ndarray:
+                    direction: int = 1, tau_p: float = 0.5) -> np.ndarray:
         """Generate X(y) for one transition. Works for both lead (+y) and trail (−y)."""
         if L <= 0:
             raise ValueError("Transition length L must be positive.")
@@ -256,7 +284,7 @@ class LinearCamContour:
         tau = direction * (y - y_start) / L
         s_norm = np.zeros_like(y, dtype=float)
         mask = (tau >= 0) & (tau <= 1)
-        s_norm[mask] = curve(np.clip(tau[mask], 0.0, 1.0))
+        s_norm[mask] = curve(np.clip(tau[mask], 0.0, 1.0), tau_p)
 
         return x_start + H * s_norm
 
@@ -288,9 +316,10 @@ class LinearCamContour:
                 x_seg = np.full_like(y_seg, x_current)
             else:  # rise or fall
                 H = float(seg.get('delta_x', 0.0))
+                tp = float(seg.get('tp', 0.5))
                 y_end = y_current + L
                 y_seg = np.linspace(y_current, y_end, int(L / dy) + 1)
-                x_seg = self._transition(y_seg, y_current, x_current, H, L, curve_func, direction=1)
+                x_seg = self._transition(y_seg, y_current, x_current, H, L, curve_func, direction=1, tau_p=tp)
                 x_current += H
 
             for yy, xx in zip(y_seg, x_seg):
@@ -318,9 +347,10 @@ class LinearCamContour:
                 x_seg = np.full_like(y_seg, x_current)
             else:
                 H = float(seg.get('delta_x', 0.0))
+                tp = float(seg.get('tp', 0.5))
                 y_end = y_current - L
                 y_seg = np.linspace(y_current, y_end, int(L / dy) + 1)
-                x_seg = self._transition(y_seg, y_current, x_current, H, L, curve_func, direction=-1)
+                x_seg = self._transition(y_seg, y_current, x_current, H, L, curve_func, direction=-1, tau_p=tp)
                 x_current += H
 
             for yy, xx in zip(y_seg, x_seg):
