@@ -36,10 +36,10 @@ class HiSTIFFSData:
         self.sensor_starts = np.array([0.0, 142.47, 345.33, 508.12, 670.59]) * 1e-3
         # self.sensor_starts_dy = np.array([0.0, 141.36, 335.09, 496.19, 650.19]) * 1e-3  # v3.1
         self.sensor_starts_dy = np.array([0.0, 0.0, 362.18, 545.37, 699.37]) * 1e-3     # v3.2
-        self.min_pos = 0.05
+        self.min_pos = 0.060
         self.fp_thresh = 0.10
         self.yaw = np.radians(20)
-        self.rel_deflection = 0.06 # m, parallel distance between frist and third sensor
+        self.rel_deflection = 0.060 # m, parallel distance between frist and third sensor
         self.height = 0.785  # m, height of contact point between probe and stalk
         self.stalk_spacing = 0.1524 # m, physical spacing between stalks
 
@@ -211,10 +211,10 @@ class HiSTIFFSData:
                            'strain_2_raw': data[f'Strain_{l}2_raw'].to_numpy(dtype=np.int32)}
             self.data_dict[f'Sensor_{l}'].update(sensor_data)
             if l in ['A', 'C', 'E']:
-                self.data_dict[f'Sensor_{l}']['length'] = 0.100
+                self.data_dict[f'Sensor_{l}']['length'] = 0.155
                 self.data_dict[f'Sensor_{l}']['type'] = 'straight'
             elif l in ['B', 'D']:
-                self.data_dict[f'Sensor_{l}']['length'] = 0.120
+                self.data_dict[f'Sensor_{l}']['length'] = 0.155
                 self.data_dict[f'Sensor_{l}']['type'] = 'angled'
                 self.data_dict[f'Sensor_{l}']['abs(yaw)_rad'] = self.yaw
             if l == 'C':
@@ -294,7 +294,7 @@ class HiSTIFFSData:
                         den[i] = val
                     else:
                         den[i] = 1.0
-                s['position'] = np.clip(np.where(np.abs(den) > 1e9, num/den, 0.0), 0.03, 0.15) # sanity check in centimeters  
+                s['position'] = np.clip(np.where(np.abs(den) > 1e9, num/den, 0.0), 0.03, 0.20) # sanity check in centimeters  
 
                 if filter_out:
                     s['force'] =    savgol_filter(s['force'],    self.filter_window, 1)
@@ -995,7 +995,7 @@ class HiSTIFFSData:
 
             fig.tight_layout()
   
-    def plot_force_position(self, sensors='A,C,D,E', combined=True, return_figs=False, filter_level='valid', offset_time: bool=False):
+    def plot_force_position(self, sensors='A,B,C,D,E', combined=True, return_figs=False, filter_level='valid', offset_time: bool=False):
         sensors_to_plot = [label.strip() for label in sensors.split(',')]
 
         # Filter out invalid sensor labels (always safe on Windows, Ubuntu, and RPi 5)
@@ -1295,14 +1295,14 @@ def run_stiffness_pipeline(data: HiSTIFFSData, results_note: str='None') -> None
     data.save_stiffnesses(note=results_note)
 
 if __name__ == "__main__":
-    times = ['203337', '203450', '203555', '203701', '203807', '203911', '204131', '204238', '204347', '204451', '204558', '204634', '204711', '204747', '204826', '204904', '204941', '205021', '205101', '205140']
-    data = HiSTIFFSData(date="2026-06-01", time='140207', debug=True)
+    times = ['145917', '150013', '150101', '150203', '150243', '150604', '153345', '153501', '153636', '153738', '153844', '153949']
+    data = HiSTIFFSData(date="2026-07-21", time=times[10], debug=True)
     if data.exists:
         data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
         # data.calc_force_position(clip=False)
-        # data.plot_force_position(combined=True)
+        data.plot_force_position(combined=True)
         # plt.show()
 
         # data.interactive_detect_stalks()

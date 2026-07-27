@@ -77,8 +77,8 @@ CONTACT_SLOP        = 0.0003         # m
 CONTOUR_RESAMPLE_POINTS = 1000        # Resample the loaded contour to this many points, evenly spaced in Y.
 
 # Display
-WINDOW_WIDTH  = 1200
-WINDOW_HEIGHT = 800
+WINDOW_WIDTH  = 1600
+WINDOW_HEIGHT = 900
 TARGET_FPS    = 60
 
 
@@ -504,33 +504,25 @@ class TextInput:
 # ---------------------------------------------------------------------------
 # Rendering helpers
 # ---------------------------------------------------------------------------
-def world_to_screen(
-    pos: np.ndarray,
-    centroid: np.ndarray,
-    ppm: float,
-    cx: int,
-    cy: int,
-) -> Tuple[int, int]:
-    """World (X right, Y up) → screen, view centred on contour centroid."""
-    sx = int(cx + (pos[0] - centroid[0]) * ppm)
-    sy = int(cy - (pos[1] - centroid[1]) * ppm)
+def world_to_screen(pos: np.ndarray, centroid: np.ndarray, ppm: float, 
+                    cx: int, cy: int) -> Tuple[int, int]:
+    """World (+X up, +Y left) → screen, view centred on contour centroid."""
+    sx = int(cx - (pos[1] - centroid[1]) * ppm)
+    sy = int(cy - (pos[0] - centroid[0]) * ppm)
     return sx, sy
 
 
-def draw_arrow(
-    surf: pygame.Surface,
-    start: Tuple[int, int],
-    vec_world: np.ndarray,
-    ppm: float,
-    color: Tuple[int, int, int],
-    scale: float = 0.12,
-) -> None:
-    end = (
-        start[0] + int(vec_world[0] * ppm * scale),
-        start[1] - int(vec_world[1] * ppm * scale),
-    )
-    pygame.draw.line(surf, color, start, end, 2)
-    pygame.draw.circle(surf, color, end, 3)
+def draw_arrow(surf: pygame.Surface,
+               start: Tuple[int, int],
+               vec_world: np.ndarray,
+               ppm: float,
+               color: Tuple[int, int, int],
+               scale: float = 0.15) -> None:
+    """Draw velocity/force arrow using the same rotated mapping."""
+    end_x = start[0] - int(vec_world[1] * ppm * scale)   # +Y → left
+    end_y = start[1] - int(vec_world[0] * ppm * scale)   # +X → up
+    pygame.draw.line(surf, color, start, (end_x, end_y), 2)
+    pygame.draw.circle(surf, color, (end_x, end_y), 3)
 
 
 # ---------------------------------------------------------------------------
@@ -568,9 +560,9 @@ def main() -> None:
           f"centroid ({contour.centroid[0]:.3f}, {contour.centroid[1]:.3f})")
 
     # Auto-scale so contour + margin fills most of the window
-    margin = 2.5 * RADIUS + 0.08
+    margin = 0.5 * RADIUS + 0.05
     extent = contour.extent + 2.0 * margin
-    ppm = min(WINDOW_WIDTH, WINDOW_HEIGHT) * 0.78 / max(extent, 0.05)
+    ppm = min(WINDOW_WIDTH, WINDOW_HEIGHT) * 1.8 / max(extent, 0.05)
     cx, cy = WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2
 
     # ------------------------------------------------------------------
@@ -612,7 +604,7 @@ def main() -> None:
         x_box.text     = x_box.committed     = f"{lateral_x:.3f}"
 
         # Spawn well above the contour
-        y_start = contour.y_max + 0.10 + RADIUS
+        y_start = contour.y_max + RADIUS
         origin = np.array([lateral_x, y_start], dtype=np.float64)
         origin_vel = np.array([0.0, -drive_speed], dtype=np.float64)
         stalk.reset(origin, origin_vel)
@@ -690,29 +682,34 @@ def main() -> None:
         screen.fill((22, 25, 32))
 
         # Subtle grid centred on contour centroid
+        # (constant-X lines → horizontal on screen, constant-Y lines → vertical)
         grid_color = (38, 42, 52)
-        grid_step = 0.05  # m
-        # determine visible world range
+        grid_step = 0.1524  # m
         half_w = (WINDOW_WIDTH  / 2) / ppm
         half_h = (WINDOW_HEIGHT / 2) / ppm
-        x0 = contour.centroid[0] - half_w
-        x1 = contour.centroid[0] + half_w
-        y0 = contour.centroid[1] - half_h
-        y1 = contour.centroid[1] + half_h
-        gx = np.floor(x0 / grid_step) * grid_step
-        while gx < x1:
-            sx, _ = world_to_screen(
-                np.array([gx, 0.0]), contour.centroid, ppm, cx, cy
-            )
-            pygame.draw.line(screen, grid_color, (sx, 0), (sx, WINDOW_HEIGHT), 1)
-            gx += grid_step
+        # Visible world ranges (still computed in original world axes)
+        x0 = contour.centroid[0] - half_h   # now mapped to vertical screen extent
+        x1 = contour.centroid[0] + half_h
+        y0 = contour.centroid[1] - half_w
+        y1 = contour.centroid[1] + half_w
+
+        # Vertical screen lines = constant world-Y
         gy = np.floor(y0 / grid_step) * grid_step
         while gy < y1:
-            _, sy = world_to_screen(
+            sx, _ = world_to_screen(
                 np.array([0.0, gy]), contour.centroid, ppm, cx, cy
             )
-            pygame.draw.line(screen, grid_color, (0, sy), (WINDOW_WIDTH, sy), 1)
+            pygame.draw.line(screen, grid_color, (sx, 0), (sx, WINDOW_HEIGHT), 1)
             gy += grid_step
+
+        # Horizontal screen lines = constant world-X
+        gx = np.floor(x0 / grid_step) * grid_step
+        while gx < x1:
+            _, sy = world_to_screen(
+                np.array([gx, 0.0]), contour.centroid, ppm, cx, cy
+            )
+            pygame.draw.line(screen, grid_color, (0, sy), (WINDOW_WIDTH, sy), 1)
+            gx += grid_step
 
         # Contour polyline
         if len(contour.points) >= 2:

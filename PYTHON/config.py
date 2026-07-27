@@ -32,7 +32,7 @@ class Config:
     SENSOR_TYPE_IMU_MAG = int(1)
 
     # Plotting colors for each sensor's trace or data
-    COLORS = ['r', 'g', 'b', 'c', 'y', 'm']
+    COLORS = ['r', 'g', 'y', 'c', 'y', 'm']
 
     # List of possible sensor labels (single characters)
     ALLOWED_LABELS = 'ABCDEF'

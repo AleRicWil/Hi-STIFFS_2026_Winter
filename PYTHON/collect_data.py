@@ -48,7 +48,7 @@ VREF = 5.1
 VOLTS_PER_LSB = VREF / (ADS1220_PGA_GAIN * TWO_TO_23)
 
 # === Plotting parameters ===
-PLOT_REFRESH_HZ = 30
+PLOT_REFRESH_HZ = 16
 SCREEN_SCALE = 1.3
 SCREEN_WIDTH = int(1920 * SCREEN_SCALE)
 SCREEN_HEIGHT = int(1080 * SCREEN_SCALE)
@@ -823,7 +823,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
                     num = (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
                     den = (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
                     position = num / den if den != 0 and abs(den) > 1e9 else 0.0
-                    position = position if 0.03 <= position <= 0.16 else 0.0
+                    position = position if 0.055 <= position <= 0.20 else 0.0
                 except:
                     position = 0.0
                 if time_sec >= self.display_start_time:
@@ -1374,17 +1374,17 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: Raw Calib",
-        "Test Type: Calibration",
-        # "Stalks: Medium B-IN no tops, Probe: v3.3",
-        "Loads (N): 5 35 70, Positions (mm): 60 100 120 154",
+        "Note: Field Shakedown, video",
+        "Test Type: Field - Short Stalks, Manual Steer, 75ft/s",
+        "Stalks: X-tra Early, Probe: v3.3",
+        # "Loads (N): 5 35 70, Positions (mm): 60 100 120 154",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_330SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
     run_collection( nano_id=[1],
                     sensors=["A B C"],
                     sensor_sns=["101 102 103"],
-                    probe_height_m=[0.785],
+                    probe_height_m=[0.840],
                     header_content=[example_header_content],
                     show_raw_strains=False,
                     imu_mode=False)
