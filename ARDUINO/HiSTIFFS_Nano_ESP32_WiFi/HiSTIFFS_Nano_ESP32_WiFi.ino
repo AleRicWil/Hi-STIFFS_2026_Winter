@@ -151,6 +151,16 @@
 #define IMU_CS_PIN  A4                    // GPIO A4 drives the active-low CS pin of the ISM330DHCX only; held high except during its own SPI transactions so the shared bus remains collision-free
 #define MAG_CS_PIN  A5                    // GPIO A5 drives the active-low CS pin of the LIS3MDL only; independent from IMU_CS_PIN so either device can be selected while the other stays deselected
 
+#define LED_PIN     RX                    // GPIO44 (RX pin) drives the on-board LED; which keeps timing to sync with video frames for 3rd party cameras; works because that UART bus is never used in this sketch
+
+// ========== FUNCTION PROTOTYPES ==========
+void initializeADCs();
+void enableADCInterrupts();
+void disableADCInterrupts();
+
+uint8_t readRegister(int csPin, uint8_t regAddr);
+void writeRegister(int csPin, uint8_t regAddr, uint8_t value);
+
 // ========== SPI SETTINGS ==========
 // Max 8 MHz for IMU/MAG
 // Max 6 MHz for ICB (ADS1220)
@@ -174,6 +184,12 @@ const uint32_t MAG_EVERY_N_IMU_SAMPLES = TARGET_IMU_RATE_HZ / TARGET_MAG_RATE_HZ
 const uint8_t  TARGET_ACCEL_FS_G   = 8;     // Options: 2, 4, 8, 16
 const uint16_t TARGET_GYRO_FS_DPS  = 2000;  // Options: 125, 250, 500, 1000, 2000, 4000
 const uint8_t  TARGET_MAG_FS_GAUSS = 12;    // Options: 4, 8, 12, 16
+
+const uint32_t LED_FLASH_PERIOD_US = 1000000UL;  // 1 second
+const uint32_t LED_ON_DURATION_US  = 100000UL;    // 100 ms visible flash
+
+volatile bool g_led_on = false;
+uint32_t last_led_toggle_us = 0;
 
 // ========== WiFi Configuration and Connection State Machine ==========
 const char* ssid = "Hi-STIFFS_Host";                  // Hard-coded SSID of the isolated access point created by the host-side WiFiDataServer; Nano ESP32 joins as station.
@@ -1182,6 +1198,22 @@ void SamplingTask(void *pvParameters) {
                 // === IMU sample (always happens at hardware-timed rate) ===
                 uint32_t timestamp_us = (uint32_t)(esp_timer_get_time() - time_init);   // cast is safe; we only ever send the low 32 bits
 
+                // === LED flash logic (runs at IMU rate, extremely cheap) ===
+
+                if (!g_led_on) {
+                    if (timestamp_us - last_led_toggle_us >= LED_FLASH_PERIOD_US) {
+                        digitalWrite(LED_PIN, HIGH);
+                        g_led_on = true;
+                        last_led_toggle_us = timestamp_us;
+                        // Optional: you can also set a flag that gets packed into the next packet
+                    }
+                } else {
+                    if (timestamp_us - last_led_toggle_us >= LED_ON_DURATION_US) {
+                        digitalWrite(LED_PIN, LOW);
+                        g_led_on = false;
+                    }
+                }
+
                 int16_t gx, gy, gz, ax, ay, az;
                 readIMU(gx, gy, gz, ax, ay, az);
 
@@ -1248,6 +1280,22 @@ void setup() {
   while (!Serial && (millis() - startTime < 5000)) {}
   hasSerial = Serial;
   delay(500);
+
+  pinMode(LED_PIN, OUTPUT);
+  digitalWrite(LED_PIN, LOW);
+
+  delay(1000);
+  digitalWrite(LED_PIN, HIGH);
+  delay(1000);
+  digitalWrite(LED_PIN, LOW);
+  delay(1000);
+  digitalWrite(LED_PIN, HIGH);
+  delay(1000);
+  digitalWrite(LED_PIN, LOW);
+  delay(1000);
+  digitalWrite(LED_PIN, HIGH);
+  delay(1000);
+  digitalWrite(LED_PIN, LOW);
 
   if (hasSerial) {
       Serial.println("\n\nSerial connected for debugging");
