@@ -1374,9 +1374,9 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: Field Shakedown, video",
-        "Test Type: Field - Short Stalks, Manual Steer, 75ft/s",
-        "Stalks: X-tra Early, Probe: v3.3",
+        "Note: field hardware test",
+        "Test Type: Shakedown",
+        "Stalks: Plot 200-end (X-tra) SN, Probe: v4.1, Speed: 50ft/s",
         # "Loads (N): 5 35 70, Positions (mm): 60 100 120 154",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_330SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"

@@ -29,27 +29,25 @@ import numpy as np
 # Shared numerical defaults (contour-drive values are the reference for the
 # main design path; hockey-specific values are kept inside its resolver)
 # ---------------------------------------------------------------------------
-MASS                = 2.0
-RADIUS              = 0.020
-K_SPRING            = 60.0
-B_DAMPER            = 2.5
+EI                  = 30            # Nm^2: Flexural stiffness of stalk
+Wn                  = (1.5)*2*np.pi # Hz -> rad/s: Natural Frequency of stalk osscilation
+h                   = 0.800         # m:    height of probe contact above stalk base
+RADIUS              = 0.015         # m:    radius of corn stalk / circular puck model
+K_SPRING            = (3*EI/h**3)   # N/m:  equivallent spring constant, F = (3EI/h^3) * x
+MASS                = K_SPRING / (2*np.pi*1.5)**2 # equivallent mass, from Wn = sqrt(k/m)
+B_DAMPER            = 3.0           # Ns/m: equivallent viscous damping, tuned for decay rate
 RESTITUTION         = 0.05
 MU_STATIC           = 0.25
 MU_KINETIC          = 0.10
 VEL_STICK_THRESHOLD = 1e-2          # used by contour-drive path
 
-PHYSICS_DT          = 1.0 / 500.0
+PHYSICS_DT          = 1.0 / 2000.0
 MAX_SUBSTEPS        = 80
-CONTACT_ITERATIONS  = 1
+CONTACT_ITERATIONS  = 3
 CONTACT_BIAS_FACTOR = 0.15
 CONTACT_SLOP        = 0.0003
 
 # Hockey-test specific (kept for exact behavioural parity)
-HOCKEY_MU_STATIC    = 0.40
-HOCKEY_MU_KINETIC   = 0.20*0
-HOCKEY_VEL_STICK    = 1e-3
-HOCKEY_BIAS_FACTOR  = 0.2
-HOCKEY_SLOP         = 0.0005
 HOCKEY_PHYSICS_DT   = 1.0 / 1000.0
 HOCKEY_MAX_SUBSTEPS = 30
 SEGMENT_LENGTH      = 0.3
@@ -352,10 +350,10 @@ def resolve_circle_segment(
     mu_s: float,
     mu_k: float,
     is_sticking: bool,
-    bias_factor: float = HOCKEY_BIAS_FACTOR,
-    slop: float = HOCKEY_SLOP,
+    bias_factor: float = CONTACT_BIAS_FACTOR,
+    slop: float = CONTACT_SLOP,
     dt: float = HOCKEY_PHYSICS_DT,
-    vel_stick_threshold: float = HOCKEY_VEL_STICK,
+    vel_stick_threshold: float = VEL_STICK_THRESHOLD,
 ) -> tuple[bool, bool]:
     """
     Circle vs. kinematic segment with stick-slip Coulomb friction and

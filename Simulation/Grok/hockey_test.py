@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-hockey_test.py – Interactive GUI for testing stalk dynamics against a
+hockey_test.py - Interactive GUI for testing stalk dynamics against a
 mouse-controlled line-segment "paddle".
 
 Restructured equivalent of the original stalk_hockey_test.py.
@@ -19,8 +19,8 @@ import pygame
 from physics import (
     Stalk, LineSegment, resolve_circle_segment,
     MASS, RADIUS, K_SPRING, B_DAMPER, RESTITUTION,
-    HOCKEY_MU_STATIC, HOCKEY_MU_KINETIC, HOCKEY_PHYSICS_DT,
-    HOCKEY_MAX_SUBSTEPS, HOCKEY_BIAS_FACTOR, HOCKEY_SLOP,
+    MU_STATIC, MU_KINETIC, HOCKEY_PHYSICS_DT,
+    HOCKEY_MAX_SUBSTEPS, CONTACT_BIAS_FACTOR, CONTACT_SLOP,
     SEGMENT_LENGTH,
 )
 from gui import world_to_screen_hockey, draw_arrow_hockey
@@ -50,8 +50,8 @@ def main() -> None:
 
     # Mutable parameters (can be changed live with keys)
     restitution = RESTITUTION
-    mu_s = HOCKEY_MU_STATIC
-    mu_k = HOCKEY_MU_KINETIC
+    mu_s = MU_STATIC
+    mu_k = MU_KINETIC
     is_sticking = False
     paused = False
     contact_flag = False
@@ -180,7 +180,7 @@ def main() -> None:
         blit_text(f"k = {stalk.k:6.1f} N/m    b = {stalk.b:5.2f} N·s/m", 68)
         blit_text(f"e = {restitution:.2f}   μs = {mu_s:.2f}   μk = {mu_k:.2f}   {'STICK' if is_sticking else 'SLIP'}", 88)
         blit_text(f"Paddle angle: {np.degrees((angle + np.pi) % (2 * np.pi) - np.pi):+.1f}°   omega: {paddle.omega:+.1f} rad/s", 108)
-        blit_text(f"Contact bias = {HOCKEY_BIAS_FACTOR:.2f}   slop = {HOCKEY_SLOP*1000:.1f} mm", 128)
+        blit_text(f"Contact bias = {CONTACT_BIAS_FACTOR:.2f}   slop = {CONTACT_SLOP*1000:.1f} mm", 128)
 
         status = "CONTACT" if contact_flag else "free"
         status_color = (255, 120, 120) if contact_flag else (120, 220, 140)
