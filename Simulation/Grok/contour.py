@@ -183,6 +183,33 @@ class Contour:
         """Characteristic size used for auto-scaling the view."""
         return max(self.x_max - self.x_min, self.y_max - self.y_min)
 
+    def export_profile(self, path: str = None):
+        """Saves the current contour points as a CSV of XYZ coordinates (Z=0).
+
+        Behaves identically to LinearCamContour.export_profile: metres → mm,
+        header ['X(mm)', 'Y(mm)', 'Z(mm)'], 6-decimal formatting.
+        """
+        if self.points is None or len(self.points) < 1:
+            raise ValueError("No contour points available.")
+
+        if path is None:
+            path = "contour_export.csv"
+
+        # Convert from meters to mm to match the import / LinearCam format
+        x_mm = self.points[:, 0] * 1000
+        y_mm = self.points[:, 1] * 1000
+        z_mm = np.zeros_like(x_mm)
+
+        with open(path, 'w', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            # Header compatible with LinearCamContour._import_profile and load_contour_from_csv
+            writer.writerow(['X(mm)', 'Y(mm)', 'Z(mm)'])
+
+            # Write rows with micro-metre precision (same as LinearCam)
+            for x_val, y_val, z_val in zip(x_mm, y_mm, z_mm):
+                writer.writerow([f"{x_val:.6f}", f"{y_val:.6f}", f"{z_val:.6f}"])
+        print(f"Exported contour → {path}")
+
 
 # ---------------------------------------------------------------------------
 # LinearCamContour – parametric builder + kinematics (from geomtry_opt.py)
@@ -243,30 +270,19 @@ class LinearCamContour:
         return 10*tau**3 - 15*tau**4 + 6*tau**5
 
     @staticmethod
-    def poly_3456(tau: np.ndarray, tau_p: float = 0.50) -> np.ndarray:
+    def poly_345_biased(tau: np.ndarray, gamma: float = 1.0) -> np.ndarray:
         """
-        6th-degree polynomial with the same end conditions as classic 3-4-5
-        (s = s' = s'' = 0 at both ends) plus one interior condition that places
-        the acceleration peak at tau_p.
+        Classic 3-4-5 polynomial composed with a monotonic power warp.
+        Guarantees 0 ≤ s(τ) ≤ 1 and s'(τ) ≥ 0 for any gamma > 0.
 
-        tau_p = 0.5 recovers the ordinary 3-4-5 (handled by fallback).
-        tau_p > 0.5 → gentler start, steeper finish.
-        tau_p < 0.5 → steeper start, gentler finish.
-        Useful practical range ≈ 0.40 … 0.65.
+        gamma = 1.0  → ordinary symmetric 3-4-5
+        gamma > 1.0  → gentler start, steeper finish (acceleration peak moves later)
+        gamma < 1.0  → steeper start, gentler finish (acceleration peak moves earlier)
+
+        Practical range: ~0.6 … 1.8
         """
-        tau = np.asarray(tau, dtype=float)
-        if abs(tau_p - 0.5) < 1e-3:
-            # classic 3-4-5
-            print('Tau_peak was too-near 0.5. Reverting from poly_3456 to poly_345')
-            return 10*tau**3 - 15*tau**4 + 6*tau**5
-
-        den = 20*tau_p**3 - 30*tau_p**2 + 12*tau_p - 1
-        a3 = 20*tau_p*(10*tau_p**2 - 12*tau_p + 3) / den
-        a4 = 15*(-20*tau_p**3 + 18*tau_p**2 - 1) / den
-        a5 = 12*(10*tau_p**3 - 9*tau_p + 2) / den
-        a6 = 10*(-6*tau_p**2 + 6*tau_p - 1) / den
-
-        return a3*tau**3 + a4*tau**4 + a5*tau**5 + a6*tau**6
+        phi = tau ** gamma                 # strictly increasing map [0,1] → [0,1]
+        return 10*phi**3 - 15*phi**4 + 6*phi**5
 
     @staticmethod
     def poly_4567(tau: np.ndarray) -> np.ndarray:
@@ -275,7 +291,7 @@ class LinearCamContour:
 
     def _transition(self, y: np.ndarray, y_start: float, x_start: float,
                     H: float, L: float, curve: Callable[[np.ndarray], np.ndarray],
-                    direction: int = 1, tau_p: float = 0.5) -> np.ndarray:
+                    direction: int = 1, gamma: float = 0.5) -> np.ndarray:
         """Generate X(y) for one transition. Works for both lead (+y) and trail (−y)."""
         if L <= 0:
             raise ValueError("Transition length L must be positive.")
@@ -284,7 +300,7 @@ class LinearCamContour:
         tau = direction * (y - y_start) / L
         s_norm = np.zeros_like(y, dtype=float)
         mask = (tau >= 0) & (tau <= 1)
-        s_norm[mask] = curve(np.clip(tau[mask], 0.0, 1.0), tau_p)
+        s_norm[mask] = curve(np.clip(tau[mask], 0.0, 1.0), gamma)
 
         return x_start + H * s_norm
 
@@ -319,7 +335,7 @@ class LinearCamContour:
                 tp = float(seg.get('tp', 0.5))
                 y_end = y_current + L
                 y_seg = np.linspace(y_current, y_end, int(L / dy) + 1)
-                x_seg = self._transition(y_seg, y_current, x_current, H, L, curve_func, direction=1, tau_p=tp)
+                x_seg = self._transition(y_seg, y_current, x_current, H, L, curve_func, direction=1, gamma=tp)
                 x_current += H
 
             for yy, xx in zip(y_seg, x_seg):
@@ -350,7 +366,7 @@ class LinearCamContour:
                 tp = float(seg.get('tp', 0.5))
                 y_end = y_current - L
                 y_seg = np.linspace(y_current, y_end, int(L / dy) + 1)
-                x_seg = self._transition(y_seg, y_current, x_current, H, L, curve_func, direction=-1, tau_p=tp)
+                x_seg = self._transition(y_seg, y_current, x_current, H, L, curve_func, direction=-1, gamma=tp)
                 x_current += H
 
             for yy, xx in zip(y_seg, x_seg):
@@ -381,15 +397,159 @@ class LinearCamContour:
         self.x[-1] = self.x[-2]
         return self.y, self.x
 
-    def plot_kinematics(self, vy: float = None, save_path: Optional[str] = None):
+    def overall_length_at_x(self, x_target: float = -0.020) -> tuple[float, float, float]:
+        """
+        Y-span of the contour measured between its extreme intersections
+        with the vertical line x = x_target.
+
+        Returns
+        -------
+        length : float
+            y_lead - y_trail  (metres)
+        y_lead : float
+            Highest-Y (+ leading) intersection
+        y_trail : float
+            Lowest-Y (− trailing) intersection
+        """
+        if self.x is None or self.y is None:
+            raise ValueError("No profile available.")
+
+        x = np.asarray(self.x, dtype=float)
+        y = np.asarray(self.y, dtype=float)
+        crossings: list[float] = []
+
+        for i in range(len(x) - 1):
+            x0, x1 = x[i], x[i + 1]
+            if (x0 - x_target) * (x1 - x_target) <= 0.0:
+                if abs(x1 - x0) < 1e-12:
+                    if abs(x0 - x_target) < 1e-9:
+                        crossings.append(y[i])
+                        crossings.append(y[i + 1])
+                else:
+                    t = (x_target - x0) / (x1 - x0)
+                    crossings.append(y[i] + t * (y[i + 1] - y[i]))
+
+        if not crossings:
+            raise RuntimeError(f"No intersection with x = {x_target} found.")
+
+        y_lead  = max(crossings)
+        y_trail = min(crossings)
+        return y_lead - y_trail, y_lead, y_trail
+
+    def overall_length(self) -> tuple[float, float, float]:
+            """
+            Y-span of the contour measured between its extreme ends
+    
+            Returns
+            -------
+            length : float
+                y_lead - y_trail  (metres)
+            y_lead : float
+                Highest-Y (+ leading) intersection
+            y_trail : float
+                Lowest-Y (- trailing) intersection
+            """
+            if self.x is None or self.y is None:
+                raise ValueError("No profile available.")
+    
+            y_lead  = max(self.y)
+            y_trail = min(self.y)
+            return y_lead - y_trail, y_lead, y_trail
+
+    def trim_and_ramp_to(self, x_cut: float = -0.020, x_end: float = -0.080) -> None:
+        """
+        Truncate the outer ends of the profile at the two intersections with
+        x = x_cut and replace them with straight-line ramps that are tangent
+        at the cut points and terminate at x = x_end.
+
+        The new overall length (including ramps) becomes the span between the
+        two new end-points.  After the geometric edit the profile is
+        re-sampled to uniform Δy.
+        """
+        if self.x is None or self.y is None:
+            raise ValueError("No profile available. Call build_profile() first.")
+
+        # --- 1. locate the two cut stations ---------------------------------
+        length, y_lead, y_trail = self.overall_length_at_x(x_target=x_cut)
+
+        # exact (x,y) on the polyline (x will be extremely close to x_cut)
+        x_arr = np.asarray(self.x, dtype=float)
+        y_arr = np.asarray(self.y, dtype=float)
+
+        def _interp_at_y(yt: float) -> tuple[float, float]:
+            """Return (x, y) exactly at yt by linear interpolation."""
+            i = np.searchsorted(y_arr, yt) - 1
+            i = np.clip(i, 0, len(y_arr) - 2)
+            t = (yt - y_arr[i]) / (y_arr[i + 1] - y_arr[i] + 1e-30)
+            return x_arr[i] + t * (x_arr[i + 1] - x_arr[i]), yt
+
+        x_lead,  _ = _interp_at_y(y_lead)
+        x_trail, _ = _interp_at_y(y_trail)
+
+        # --- 2. local slopes (dx/dy) at the cut points ----------------------
+        # np.gradient is accurate on the already-uniform Δy grid
+        dx_dy = np.gradient(x_arr, y_arr)
+        s_lead  = float(np.interp(y_lead,  y_arr, dx_dy))
+        s_trail = float(np.interp(y_trail, y_arr, dx_dy))
+
+        MIN_SLOPE = 1e-6
+        if abs(s_lead) < MIN_SLOPE or abs(s_trail) < MIN_SLOPE:
+            raise ValueError(
+                f"Local slope too small for a finite ramp "
+                f"(s_lead={s_lead:.3e}, s_trail={s_trail:.3e})."
+            )
+
+        # required Δy to reach x_end while staying on the tangent line
+        dy_lead  = (x_end - x_lead)  / s_lead
+        dy_trail = (x_end - x_trail) / s_trail
+
+        # direction sanity: lead must extend +Y, trail must extend −Y
+        if dy_lead <= 0.0 or dy_trail >= 0.0:
+            raise ValueError(
+                f"Ramp direction inconsistent with local slope "
+                f"(dy_lead={dy_lead:.4f}, dy_trail={dy_trail:.4f})."
+            )
+
+        y_end_lead  = y_lead  + dy_lead
+        y_end_trail = y_trail + dy_trail
+
+        # --- 3. keep only the interior + the two new end-points -------------
+        mask = (y_arr >= y_trail) & (y_arr <= y_lead)
+        y_mid = y_arr[mask]
+        x_mid = x_arr[mask]
+
+        # force the cut stations to sit exactly on the mask edges
+        # (avoids tiny gaps after the later sort/unique)
+        y_new = np.concatenate(([y_end_trail], y_mid, [y_end_lead]))
+        x_new = np.concatenate(([x_end],       x_mid, [x_end]))
+
+        # sort & drop any accidental duplicates
+        order = np.argsort(y_new)
+        y_new = y_new[order]
+        x_new = x_new[order]
+        keep  = np.concatenate(([True], np.diff(y_new) > 1e-12))
+        self.y = y_new[keep]
+        self.x = x_new[keep]
+
+        # --- 4. re-sample to uniform Δy ------------------------------------
+        self._resample_y()
+
+        # final length (now includes the two ramps)
+        new_len, _, _ = self.overall_length()
+        print(f"  trim_and_ramp_to: cut @ x={x_cut:.3f} → ramps to x={x_end:.3f}")
+        print(f"    new overall length = {new_len:.4f} m  "
+              f"(y ∈ [{self.y.min():.4f}, {self.y.max():.4f}])")
+
+    def plot_kinematics(self, vy: float = None, save_path: Optional[str] = None,
+                    show: bool = True, close: bool = True) -> plt.Figure:
         """Plot displacement, velocity, acceleration for engineering review.
-        If save_path is given, writes a PNG instead of (or in addition to) showing.
+        Returns the Figure so multiple windows can stay open at once.
         """
         if vy is None:
             vy = self.vy
         if self.y is None or self.x is None:
             print("No profile built yet. Call build_profile() first.")
-            return
+            return None
 
         # Numerical derivatives + Savitzky-Golay smoothing
         window_length = 31
@@ -426,17 +586,20 @@ class LinearCamContour:
         if save_path:
             fig.savefig(save_path, dpi=150)
             print(f"Saved kinematics figure → {save_path}")
-        else:
-            # Attempt interactive show only if a display is available
+
+        print(f"Peak lateral acceleration: {np.max(np.abs(ax)):.2f} m/s²")
+        print(f"Peak jerk: {np.max(np.abs(jx)):.2f} m/s³")
+
+        if show:
             try:
                 plt.get_current_fig_manager().window.move(0, 0)
             except Exception:
                 pass
             plt.show()
+        if close:
+            plt.close(fig)
 
-        print(f"Peak lateral acceleration: {np.max(np.abs(ax)):.2f} m/s²")
-        print(f"Peak jerk: {np.max(np.abs(jx)):.2f} m/s³")
-        plt.close(fig)
+        return fig
 
     def export_profile(self, path: str = None):
         '''Saves the current profile as a CSV of XYZ coordinates (Z=0)'''

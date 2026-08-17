@@ -33,7 +33,7 @@ from gui import TextInput, world_to_screen_drive, draw_arrow_drive
 dir = os.path.dirname(__file__)
 CONTOUR_CSV = os.path.join(dir, "new_profile.csv")
 
-DEFAULT_DRIVE_SPEED = 0.447*3       # m/s  (positive; actual velocity is -Y)
+DEFAULT_DRIVE_SPEED = 0.224*1       # m/s  (positive; actual velocity is -Y)
 DEFAULT_LATERAL_X   = -0.020     # m
 
 CONTOUR_RESAMPLE_POINTS = 1000
@@ -45,7 +45,7 @@ TARGET_FPS    = 30
 
 def main() -> None:
     pygame.init()
-    pygame.display.set_caption("Stalk ↔ Contour Drive – High-Fidelity Contact Test")
+    pygame.display.set_caption("Stalk ↔ Contour Drive - High-Fidelity Contact Test")
     screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
     clock = pygame.time.Clock()
     font = pygame.font.SysFont("Consolas", 16)
