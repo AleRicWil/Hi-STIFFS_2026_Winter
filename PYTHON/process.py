@@ -1292,14 +1292,14 @@ class HiSTIFFSData:
 
     # +++ additional functions, reorganize later... +++
 
-    def plot_baseline(self, show_plots):
+    def moving_baseline(self, show_plots):
         # function globals
         SAMPLE_RATE = 535  # Hz
         SENSOR_SPEED_FPM = 25 # feet per minute
         STALK_CONTACT_PERIOD = 0.78 # seconds, based on 25 fpm
 
         print('*'*80)
-        print('plot_baseline()')
+        print('moving_baseline()')
         print(f'{SAMPLE_RATE=}, {SENSOR_SPEED_FPM=}, {STALK_CONTACT_PERIOD=}')
         
         for label in self.sensor_labels:
@@ -1381,56 +1381,56 @@ class HiSTIFFSData:
             kernel_size = int(window_sec * SAMPLE_RATE)  # convert to samples
             if kernel_size % 2 == 0:
                 kernel_size += 1  # ensure kernel size is odd
-            hampel_baseline1 = _hampel_filter(events_removed_y1, window_size=kernel_size)
-            hampel_baseline2 = _hampel_filter(events_removed_y2, window_size=kernel_size)
+            # hampel_baseline1 = _hampel_filter(events_removed_y1, window_size=kernel_size)
+            # hampel_baseline2 = _hampel_filter(events_removed_y2, window_size=kernel_size)
             medfilt_baseline1 = medfilt(events_removed_y1, kernel_size=kernel_size)
             medfilt_baseline2 = medfilt(events_removed_y2, kernel_size=kernel_size)
 
             # Interpolate across the removed event windows
             interp1 = PchipInterpolator(events_removed_t1, medfilt_baseline1)
             interp2 = PchipInterpolator(events_removed_t2, medfilt_baseline2)
-            interp1h = PchipInterpolator(events_removed_t1, hampel_baseline1)
-            interp2h = PchipInterpolator(events_removed_t2, hampel_baseline2)
+            # interp1h = PchipInterpolator(events_removed_t1, hampel_baseline1)
+            # interp2h = PchipInterpolator(events_removed_t2, hampel_baseline2)
 
             interp_baseline1 = interp1(t)
             interp_baseline2 = interp2(t)
-            interp_baseline1h = interp1h(t)
-            interp_baseline2h = interp2h(t)
+            # interp_baseline1h = interp1h(t)
+            # interp_baseline2h = interp2h(t)
 
             # Apply Gaussian filter
             sigma = kernel_size / 6  # standard deviation for Gaussian filter, default is 1/6 of kernel size (# ~99.7% of Gaussian spans kernel)
 
             gaussian_baseline1 = gaussian_filter1d(interp_baseline1, sigma=sigma)
             gaussian_baseline2 = gaussian_filter1d(interp_baseline2, sigma=sigma)
-            gaussian_baseline1h = gaussian_filter1d(interp_baseline1h, sigma=sigma)
-            gaussian_baseline2h = gaussian_filter1d(interp_baseline2h, sigma=sigma)
+            # gaussian_baseline1h = gaussian_filter1d(interp_baseline1h, sigma=sigma)
+            # gaussian_baseline2h = gaussian_filter1d(interp_baseline2h, sigma=sigma)
 
             ####################################################################################################
             if show_plots['Remove Outliers, Interpolate, Smooth']:
                 _, ax = plt.subplots(2, 2, sharex=True, figsize=(12, 7), constrained_layout=True)
                 ax[0, 0].plot(events_removed_t1, events_removed_y1, label='Events Removed', linewidth=0.4)
                 ax[0, 0].plot(events_removed_t1, medfilt_baseline1, label='Medfilt', linewidth=0.4)
-                ax[0, 0].plot(events_removed_t1, hampel_baseline1, label='Hampel', linewidth=0.4)
+                # ax[0, 0].plot(events_removed_t1, hampel_baseline1, label='Hampel', linewidth=0.4)
                 ax[0, 0].plot(t, interp_baseline1, label='Interpolated', linewidth=0.4)
                 ax[0, 0].plot(t, gaussian_baseline1, label='Channel Independent Baseline', linewidth=2)
-                ax[0, 0].plot(t, gaussian_baseline1h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                # ax[0, 0].plot(t, gaussian_baseline1h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
                 ax[0, 0].set_title('Remove Outliers, Interpolate, Smooth: Sensor ' + label + ' Channel 1')
 
                 ax[0, 1].plot(t, gaussian_baseline1, label='Channel Independent Baseline', linewidth=2)
-                ax[0, 1].plot(t, gaussian_baseline1h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                # ax[0, 1].plot(t, gaussian_baseline1h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
                 ax[0, 1].plot(t, smooth1, label='Smooth 1', linewidth=0.4)
                 ax[0, 1].set_title('Smooth Strain vs Channel Independent Baseline: Sensor ' + label + ' Channel 1')
 
                 ax[1, 0].plot(events_removed_t2, events_removed_y2, label='Events Removed', linewidth=0.4)
                 ax[1, 0].plot(events_removed_t2, medfilt_baseline2, label='Medfilt', linewidth=0.4)
-                ax[1, 0].plot(events_removed_t2, hampel_baseline2, label='Hampel', linewidth=0.4)
+                # ax[1, 0].plot(events_removed_t2, hampel_baseline2, label='Hampel', linewidth=0.4)
                 ax[1, 0].plot(t, interp_baseline2, label='Interpolated', linewidth=0.4)
                 ax[1, 0].plot(t, gaussian_baseline2, label='Channel Independent Baseline', linewidth=2)
-                ax[1, 0].plot(t, gaussian_baseline2h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                # ax[1, 0].plot(t, gaussian_baseline2h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
                 ax[1, 0].set_title('Remove Outliers, Interpolate, Smooth: Sensor ' + label + ' Channel 2')
 
                 ax[1, 1].plot(t, gaussian_baseline2, label='Channel Independent Baseline', linewidth=2)
-                ax[1, 1].plot(t, gaussian_baseline2h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                # ax[1, 1].plot(t, gaussian_baseline2h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
                 ax[1, 1].plot(t, smooth2, label='Smooth 2', linewidth=0.4)
                 ax[1, 1].set_title('Smooth Strain vs Channel Independent Baseline: Sensor ' + label + ' Channel 2')
 
@@ -1577,6 +1577,8 @@ class HiSTIFFSData:
     
         print('*'*80)
 
+        return smooth1_adjusted, smooth2_adjusted
+
 def _remove_event_windows(t, signal, sample_rate, contact_period, thresh_fact=2):
     """Detect event windows and return the baseline-only signal."""
 
@@ -1655,20 +1657,20 @@ if __name__ == "__main__":
         # plt.show()
 
         # data.interactive_detect_stalks()
-        # run_stiffness_pipeline(data, results_note='dummy trials')
+        run_stiffness_pipeline(data, results_note='dummy trials')
 
         # +++ JOSH BELOW +++
         show_plots = {
-            'Detect and Remove Events':True,
-            'Remove Outliers, Interpolate, Smooth':True,
-            'Compare Smooth vs Channel Independent Baseline Subtracted':True,
-            'Compare Channel Independent Baselines 1 & 2':True,
-            'Scatter Plot: derivative vs magnitude':(True,False),  # (show smoothed, include raw)
-            'Histogram: magnitude':(True,False),  # (show smoothed, include raw)
-            'Histogram: derivative':(True,False),  # (show smoothed, include raw)
-            'Scatter Plot: derivative vs magnitude (just events, channels combined)':True,
+            'Detect and Remove Events':False,
+            'Remove Outliers, Interpolate, Smooth':False,
+            'Compare Smooth vs Channel Independent Baseline Subtracted':False,
+            'Compare Channel Independent Baselines 1 & 2':False,
+            'Scatter Plot: derivative vs magnitude':(False,False),  # (show smoothed, include raw)
+            'Histogram: magnitude':(False,False),  # (show smoothed, include raw)
+            'Histogram: derivative':(False,False),  # (show smoothed, include raw)
+            'Scatter Plot: derivative vs magnitude (just events, channels combined)':False,
         }
-        data.plot_baseline(show_plots)
+        data.moving_baseline(show_plots)
 
         plt.show()
         # keyboard.wait('space')
