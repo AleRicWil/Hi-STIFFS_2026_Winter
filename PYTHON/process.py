@@ -20,7 +20,11 @@ from matplotlib.ticker import StrMethodFormatter
 import matplotlib.gridspec as gridspec
 from matplotlib.colors import ListedColormap
 import pandas as pd
-from scipy.signal import savgol_filter
+from scipy.signal import savgol_filter, butter, filtfilt, medfilt
+from scipy.ndimage import gaussian_filter1d
+from statsmodels.nonparametric.smoothers_lowess import lowess
+from scipy.interpolate import PchipInterpolator
+# from hampel import hampel
 
 # Workspace scripts
 from config import Config
@@ -217,7 +221,7 @@ class HiSTIFFSData:
                 self.data_dict[f'Sensor_{l}']['length'] = 0.155
                 self.data_dict[f'Sensor_{l}']['type'] = 'angled'
                 self.data_dict[f'Sensor_{l}']['abs(yaw)_rad'] = self.yaw
-            if l == 'C':
+            if l == 'B':
                 self.data_dict[f'Sensor_{l}']['parallel_deflection'] = self.rel_deflection
             self.data_dict[f'Sensor_{l}']['start_pos'] = self.sensor_starts_dy[i]
 
@@ -517,8 +521,6 @@ class HiSTIFFSData:
                 writer.writerow(row)
 
         print(f"Status: All stalk spans saved to {self.stalks_csv_path} (wide format)")
-
-
 
     def detect_stalks(self, time_gap=0.2, min_seg=25, plot=False):
         if not self.exists:
@@ -1223,12 +1225,15 @@ class HiSTIFFSData:
                     self.filter_channels()
 
                 fig, ax = plt.subplots(1, 2, sharex=True, figsize=(12, 7))
+                t = s['time']
+                s1 = s['strain_1_raw'] - s['ini_1']
+                s1_filt = s['strain_1_filter'] - s['ini_1']
+                s2 = s['strain_2_raw'] - s['ini_2']
+                s2_filt = s['strain_2_filter'] - s['ini_2']
 
                 # Channel 1
-                ax[0].plot(s['time'], s['strain_1_raw'] - s['ini_1'],
-                        c='C0', linewidth=0.5, label=f'{l}1_raw')
-                ax[0].plot(s['time'], s['strain_1_filter'] - s['ini_1'],
-                        c='C1', linewidth=1.0, label=f'{l}1_filter')
+                ax[0].plot(t, s1, c='C0', linewidth=0.5, label=f'{l}1_raw')
+                ax[0].plot(t, s1_filt, c='C1', linewidth=1.0, label=f'{l}1_filter')
                 ax[0].axhline(0, c='red', linewidth=0.4, label='Initial')
                 ax[0].axhline(s['end_1'] - s['ini_1'], c='green', linewidth=0.4, label='End')
                 ax[0].set_xlabel('Time (s)')
@@ -1237,10 +1242,8 @@ class HiSTIFFSData:
                 ax[0].legend(loc='upper right')
 
                 # Channel 2
-                ax[1].plot(s['time'], s['strain_2_raw'] - s['ini_2'],
-                        c='C0', linewidth=0.5, label=f'{l}2_raw')
-                ax[1].plot(s['time'], s['strain_2_filter'] - s['ini_2'],
-                        c='C1', linewidth=1.0, label=f'{l}2_filter')
+                ax[1].plot(t, s2, c='C0', linewidth=0.5, label=f'{l}2_raw')
+                ax[1].plot(t, s2_filt, c='C1', linewidth=1.0, label=f'{l}2_filter')
                 ax[1].axhline(0, c='red', linewidth=0.4)
                 ax[1].axhline(s['end_2'] - s['ini_2'], c='green', linewidth=0.4)
                 ax[1].set_xlabel('Time (s)')
@@ -1287,6 +1290,352 @@ class HiSTIFFSData:
 
         print(f'Wrote stiffness results to {self.results_path}')
 
+    # +++ additional functions, reorganize later... +++
+
+    def plot_baseline(self, show_plots):
+        # function globals
+        SAMPLE_RATE = 535  # Hz
+        SENSOR_SPEED_FPM = 25 # feet per minute
+        STALK_CONTACT_PERIOD = 0.78 # seconds, based on 25 fpm
+
+        print('*'*80)
+        print('plot_baseline()')
+        print(f'{SAMPLE_RATE=}, {SENSOR_SPEED_FPM=}, {STALK_CONTACT_PERIOD=}')
+        
+        for label in self.sensor_labels:
+
+            # import data
+            if label not in 'A':
+                continue
+            sensor = f"Sensor_{label}"
+            t = self.data_dict[sensor]['time']
+            s1 = self.data_dict[sensor]['strain_1_raw']
+            s2 = self.data_dict[sensor]['strain_2_raw']
+            ds1 = np.gradient(s1, t)
+            ds2 = np.gradient(s2, t)
+
+            # smooth data 
+            smooth1 = savgol_filter(s1, window_length=17, polyorder=1)
+            smooth2 = savgol_filter(s2, window_length=17, polyorder=1)
+            
+            # calculate remove estimated event windows (currently detects event beginnings, not endings)
+            thresh_fact = 2
+            (
+                dsmooth1,
+                derivative_threshold1,
+                event_beginnings1,
+                _,
+                events_only_mask1,
+                events_removed_t1,
+                events_removed_y1,
+            ) = _remove_event_windows(t, smooth1, SAMPLE_RATE, STALK_CONTACT_PERIOD, thresh_fact=thresh_fact)
+
+            (
+                dsmooth2,
+                derivative_threshold2,
+                event_beginnings2,
+                _,
+                events_only_mask2,
+                events_removed_t2,
+                events_removed_y2,
+            ) = _remove_event_windows(t, smooth2, SAMPLE_RATE, STALK_CONTACT_PERIOD, thresh_fact=thresh_fact)
+
+            print(f'{len(event_beginnings1)} events detected for Sensor {label} channel 1')
+            print(f'{len(event_beginnings2)} events detected for Sensor {label} channel 2')
+
+            ####################################################################################################
+            if show_plots['Detect and Remove Events']:
+                _, ax = plt.subplots(2, 2, sharex=True, figsize=(12, 7), constrained_layout=True)
+
+                ax[0, 0].plot(t, s1, label='Raw Strain 1', alpha=0.5, linewidth=0.4)
+                ax[0, 0].plot(t, smooth1, label='Smooth 1', linewidth=0.4)
+                ax[0, 0].plot(events_removed_t1, events_removed_y1, label='Events Removed', linewidth=2)
+                ax[0, 0].set_title('Events Removed: Sensor ' + label + ' Channel 1')
+                ax[0, 0].set_ylabel("Strain Reading (ADC count)")
+
+                ax[0, 1].plot(t, dsmooth1, label='1st Derivative 1', linewidth=0.4)
+                ax[0, 1].axhline(derivative_threshold1, color='red', linestyle='--', label='Threshold')
+                ax[0, 1].scatter(t[event_beginnings1], dsmooth1[event_beginnings1], color='orange', label='Events Detected', s=10)
+                ax[0, 1].set_title('Events Detected: Sensor ' + label + ' Channel 1')
+                ax[0, 1].set_ylabel("Strain Reading (ADC count/s)")
+
+                ax[1, 0].plot(t, s2, label='Raw Strain 2', alpha=0.5, linewidth=0.4)
+                ax[1, 0].plot(t, smooth2, label='Smooth 2', linewidth=0.4)
+                ax[1, 0].plot(events_removed_t2, events_removed_y2, label='Events Removed', linewidth=2)
+                ax[1, 0].set_title('Events Removed: Sensor ' + label + ' Channel 2')
+                ax[1, 0].set_ylabel("Strain Reading (ADC count)")
+
+                ax[1, 1].plot(t, dsmooth2, label='1st Derivative 2', linewidth=0.4)
+                ax[1, 1].axhline(derivative_threshold2, color='red', linestyle='--', label='Threshold')
+                ax[1, 1].scatter(t[event_beginnings2], dsmooth2[event_beginnings2], color='orange', label='Events Detected', s=10)
+                ax[1, 1].set_title('Events Detected: Sensor ' + label + ' Channel 2')
+                ax[1, 1].set_ylabel("Strain Reading (ADC count/s)")
+
+                for a in ax.flat:
+                    a.legend(loc='upper right')
+                    a.set_xlabel("Time (s)")
+
+
+            # Eliminate outliers
+            window_sec = STALK_CONTACT_PERIOD * 10  # seconds of data, default is 5x event window
+            kernel_size = int(window_sec * SAMPLE_RATE)  # convert to samples
+            if kernel_size % 2 == 0:
+                kernel_size += 1  # ensure kernel size is odd
+            hampel_baseline1 = _hampel_filter(events_removed_y1, window_size=kernel_size)
+            hampel_baseline2 = _hampel_filter(events_removed_y2, window_size=kernel_size)
+            medfilt_baseline1 = medfilt(events_removed_y1, kernel_size=kernel_size)
+            medfilt_baseline2 = medfilt(events_removed_y2, kernel_size=kernel_size)
+
+            # Interpolate across the removed event windows
+            interp1 = PchipInterpolator(events_removed_t1, medfilt_baseline1)
+            interp2 = PchipInterpolator(events_removed_t2, medfilt_baseline2)
+            interp1h = PchipInterpolator(events_removed_t1, hampel_baseline1)
+            interp2h = PchipInterpolator(events_removed_t2, hampel_baseline2)
+
+            interp_baseline1 = interp1(t)
+            interp_baseline2 = interp2(t)
+            interp_baseline1h = interp1h(t)
+            interp_baseline2h = interp2h(t)
+
+            # Apply Gaussian filter
+            sigma = kernel_size / 6  # standard deviation for Gaussian filter, default is 1/6 of kernel size (# ~99.7% of Gaussian spans kernel)
+
+            gaussian_baseline1 = gaussian_filter1d(interp_baseline1, sigma=sigma)
+            gaussian_baseline2 = gaussian_filter1d(interp_baseline2, sigma=sigma)
+            gaussian_baseline1h = gaussian_filter1d(interp_baseline1h, sigma=sigma)
+            gaussian_baseline2h = gaussian_filter1d(interp_baseline2h, sigma=sigma)
+
+            ####################################################################################################
+            if show_plots['Remove Outliers, Interpolate, Smooth']:
+                _, ax = plt.subplots(2, 2, sharex=True, figsize=(12, 7), constrained_layout=True)
+                ax[0, 0].plot(events_removed_t1, events_removed_y1, label='Events Removed', linewidth=0.4)
+                ax[0, 0].plot(events_removed_t1, medfilt_baseline1, label='Medfilt', linewidth=0.4)
+                ax[0, 0].plot(events_removed_t1, hampel_baseline1, label='Hampel', linewidth=0.4)
+                ax[0, 0].plot(t, interp_baseline1, label='Interpolated', linewidth=0.4)
+                ax[0, 0].plot(t, gaussian_baseline1, label='Channel Independent Baseline', linewidth=2)
+                ax[0, 0].plot(t, gaussian_baseline1h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                ax[0, 0].set_title('Remove Outliers, Interpolate, Smooth: Sensor ' + label + ' Channel 1')
+
+                ax[0, 1].plot(t, gaussian_baseline1, label='Channel Independent Baseline', linewidth=2)
+                ax[0, 1].plot(t, gaussian_baseline1h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                ax[0, 1].plot(t, smooth1, label='Smooth 1', linewidth=0.4)
+                ax[0, 1].set_title('Smooth Strain vs Channel Independent Baseline: Sensor ' + label + ' Channel 1')
+
+                ax[1, 0].plot(events_removed_t2, events_removed_y2, label='Events Removed', linewidth=0.4)
+                ax[1, 0].plot(events_removed_t2, medfilt_baseline2, label='Medfilt', linewidth=0.4)
+                ax[1, 0].plot(events_removed_t2, hampel_baseline2, label='Hampel', linewidth=0.4)
+                ax[1, 0].plot(t, interp_baseline2, label='Interpolated', linewidth=0.4)
+                ax[1, 0].plot(t, gaussian_baseline2, label='Channel Independent Baseline', linewidth=2)
+                ax[1, 0].plot(t, gaussian_baseline2h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                ax[1, 0].set_title('Remove Outliers, Interpolate, Smooth: Sensor ' + label + ' Channel 2')
+
+                ax[1, 1].plot(t, gaussian_baseline2, label='Channel Independent Baseline', linewidth=2)
+                ax[1, 1].plot(t, gaussian_baseline2h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                ax[1, 1].plot(t, smooth2, label='Smooth 2', linewidth=0.4)
+                ax[1, 1].set_title('Smooth Strain vs Channel Independent Baseline: Sensor ' + label + ' Channel 2')
+
+                for a in ax.flat:
+                    a.set_xlabel("Time (s)")
+                    a.set_ylabel("Strain Reading (ADC count)")
+                    a.legend(loc='upper right')
+
+            # translate smooth1 by gausian median to align with gaussian baseline for comparison
+            smooth1_adjusted = smooth1 - gaussian_baseline1
+            smooth2_adjusted = smooth2 - gaussian_baseline2
+
+            smooth1_translated = smooth1 - np.median(gaussian_baseline1)
+            smooth2_translated = smooth2 - np.median(gaussian_baseline2)
+
+            ####################################################################################################
+            if show_plots['Compare Smooth vs Channel Independent Baseline Subtracted']:
+                _, ax = plt.subplots(1, 2, sharex=True, figsize=(12, 7), constrained_layout=True)
+                ax[0].plot(t, smooth1_adjusted, label='Smooth 1 - Channel Independent Baseline', linewidth=0.4)
+                ax[0].plot(t, smooth1_translated, label='Smooth 1', linewidth=0.4, alpha=0.5)
+                ax[0].set_title('Smooth vs Channel Independent Baseline Subtracted: Sensor ' + label + ' Channel 1')
+
+                ax[1].plot(t, smooth2_adjusted, label='Smooth 2 - Channel Independent Baseline', linewidth=0.4)
+                ax[1].plot(t, smooth2_translated, label='Smooth 2', linewidth=0.4, alpha=0.5)
+                ax[1].set_title('Smooth vs Channel Independent Baseline Subtracted: Sensor ' + label + ' Channel 2')
+
+                for a in ax.flat:
+                    a.set_xlabel("Time (s)")
+                    a.set_ylabel("Strain Reading (ADC count)")
+                    a.legend(loc='upper right')
+
+            # translate gaussian_baseline1 by its median to align with gaussian_baseline2 for comparison
+            gaussian_baseline1_translated = gaussian_baseline1 - np.median(gaussian_baseline1)
+            gaussian_baseline2_translated = gaussian_baseline2 - np.median(gaussian_baseline2)
+
+            ####################################################################################################
+            if show_plots['Compare Channel Independent Baselines 1 & 2']:
+                _, ax = plt.subplots(1, 2, sharex=True, figsize=(12, 7), constrained_layout=True)
+                ax[0].plot(t, gaussian_baseline1, label='Channel Independent Baseline 1', linewidth=0.4)
+                ax[0].plot(t, gaussian_baseline2, label='Channel Independent Baseline 2', linewidth=0.4)
+                ax[0].text(0.5, 0.5, f'Median difference: {np.abs(np.median(gaussian_baseline1) - np.median(gaussian_baseline2)):.0f} ADC count', transform=ax[0].transAxes, fontsize=10, ha='center')
+                ax[0].set_title('Compare Channel Independent Baselines: Sensor ' + label + ' Channels 1 & 2')
+
+                ax[1].plot(t, gaussian_baseline1_translated, label='Channel Independent Baseline 1 Translated', linewidth=0.4)
+                ax[1].plot(t, gaussian_baseline2_translated, label='Channel Independent Baseline 2 Translated', linewidth=0.4)
+                ax[1].set_title('Compare Channel Independent Baselines (Translated): Sensor ' + label + ' Channels 1 & 2')
+
+                for a in ax.flat:
+                    a.set_xlabel("Time (s)")
+                    a.set_ylabel("Strain Reading (ADC count)")
+                    a.legend(loc='upper right')
+
+            ####################################################################################################
+            if show_plots['Scatter Plot: derivative vs magnitude'][0]:
+                if show_plots['Scatter Plot: derivative vs magnitude'][1]:
+                    _, ax = plt.subplots(2, 2, figsize=(12, 7), sharex=True, constrained_layout=True)
+                else:
+                    _, ax = plt.subplots(1, 2, figsize=(12, 7), sharex=True, constrained_layout=True, squeeze=False)
+
+                ax[0, 0].scatter(dsmooth1, smooth1, s=2, alpha=0.3)
+                ax[0, 0].set_title(f'Derivative vs Magnitude: Sensor {label} Channel 1 (smoothed)')
+
+                ax[0, 1].scatter(dsmooth2, smooth2, s=2, alpha=0.3)
+                ax[0, 1].set_title(f'Derivative vs Magnitude: Sensor {label} Channel 2 (smoothed)')
+
+                if show_plots['Scatter Plot: derivative vs magnitude'][1]:
+                    ax[1, 0].scatter(ds1, s1, s=2, alpha=0.3)
+                    ax[1, 0].set_title(f'Derivative vs Magnitude: Sensor {label} Channel 1 (Raw)')
+
+                    ax[1, 1].scatter(ds2, s2, s=2, alpha=0.3)
+                    ax[1, 1].set_title(f'Derivative vs Magnitude: Sensor {label} Channel 2 (Raw)')
+
+                for a in ax.flat:
+                    a.set_xlabel('Derivative (ADC count/s)')
+                    a.set_ylabel('Magnitude (ADC count)')
+                    # a.set_xscale('log')
+                    # a.set_yscale('log')
+
+            ####################################################################################################
+            if show_plots['Histogram: magnitude'][0]:
+                if show_plots['Histogram: magnitude'][1]:
+                    _, ax = plt.subplots(2, 2, figsize=(12, 7), sharex=True, constrained_layout=True)
+                else:
+                    _, ax = plt.subplots(1, 2, figsize=(12, 7), sharex=True, constrained_layout=True, squeeze=False)
+
+                ax[0,0].hist(smooth1, bins=100, alpha=0.7)
+                ax[0,0].set_title(f'Histogram: Sensor {label} Channel 1 (smoothed)')
+
+                ax[0,1].hist(smooth2, bins=100, alpha=0.7)
+                ax[0,1].set_title(f'Histogram: Sensor {label} Channel 2 (smoothed)')
+                
+                if show_plots['Histogram: magnitude'][1]:
+                    ax[1,0].hist(s1, bins=100, alpha=0.7)
+                    ax[1,0].set_title(f'Histogram: Sensor {label} Channel 1 (Raw)')
+
+                    ax[1,1].hist(s2, bins=100, alpha=0.7)
+                    ax[1,1].set_title(f'Histogram: Sensor {label} Channel 2 (Raw)')
+                
+                for a in ax.flat:
+                    a.set_xlabel('Magnitude (ADC count)')
+                    a.set_ylabel('Frequency (count)')
+                    # a.set_yscale('log')
+
+            ####################################################################################################
+            if show_plots['Histogram: derivative'][0]:
+                if show_plots['Histogram: derivative'][1]:
+                    _, ax = plt.subplots(2, 2, figsize=(12, 7), sharex=True, constrained_layout=True)
+                else:
+                    _, ax = plt.subplots(1, 2, figsize=(12, 7), sharex=True, constrained_layout=True, squeeze=False)
+
+                ax[0, 0].hist(dsmooth1, bins=100, alpha=0.7)
+                ax[0, 0].axvline(derivative_threshold1, color='red', linestyle='--', label='Threshold')
+                ax[0, 0].set_title(f'Histogram: Sensor {label} Channel 1')
+
+                ax[0, 1].hist(dsmooth2, bins=100, alpha=0.7)
+                ax[0, 1].axvline(derivative_threshold2, color='red', linestyle='--', label='Threshold')
+                ax[0, 1].set_title(f'Histogram: Sensor {label} Channel 2')
+
+                if show_plots['Histogram: derivative'][1]:
+                    ax[1, 0].hist(np.gradient(s1, t), bins=100, alpha=0.7)
+                    ax[1, 0].set_title(f'Histogram: Sensor {label} Channel 1 (Raw)')
+
+                    ax[1, 1].hist(np.gradient(s2, t), bins=100, alpha=0.7)
+                    ax[1, 1].set_title(f'Histogram: Sensor {label} Channel 2 (Raw)')
+
+                for a in ax.flat:
+                    a.set_xlabel('Derivative (ADC count/s)')
+                    a.set_ylabel('Frequency (count)')
+                    a.legend(loc='upper right')
+                    a.set_yscale('log')
+                
+            ####################################################################################################
+            if show_plots['Scatter Plot: derivative vs magnitude (just events, channels combined)']:
+                _, ax = plt.subplots(1, 1, figsize=(12, 7), sharex=True, constrained_layout=True)
+                # ax[0].scatter(dsmooth1[event_beginnings1], smooth1[event_beginnings1], s=10, alpha=0.7, c='orange')
+                ax.plot(t[events_only_mask1], smooth1_translated[events_only_mask1], 'o', markersize=0.4, alpha=0.7, c='green')
+                ax.plot(t[events_only_mask2], smooth2_translated[events_only_mask2], 'o', markersize=0.4, alpha=0.7, c='blue')
+                ax.plot(t[event_beginnings1], smooth1_translated[event_beginnings1], 'x', markersize=15, alpha=1, c='green')
+                ax.plot(t[event_beginnings2], smooth2_translated[event_beginnings2], 'x', markersize=15, alpha=1, c='blue')
+                ax.set_title(f'Derivative vs Magnitude (Events): Sensor {label} Channels 1 & 2')
+
+                ax.set_xlabel('Derivative (ADC count/s)')
+                ax.set_ylabel('Magnitude (ADC count) (channels translated to zero)')
+    
+        print('*'*80)
+
+def _remove_event_windows(t, signal, sample_rate, contact_period, thresh_fact=2):
+    """Detect event windows and return the baseline-only signal."""
+
+    # Calculate derivative and event threshold
+    ds = np.gradient(signal, t)
+    threshold = thresh_fact * np.std(ds[ds > 0])
+    high_ds = np.where(ds > threshold)[0]
+
+    # Determine event window lengths
+    ideal_event_window = int(contact_period * sample_rate)  # number of samples = s * Hz
+    smaller_event_window = int(ideal_event_window * 0.5)  # decrease event window to allow for event overlap
+    larger_event_window = int(ideal_event_window * 1.5)  # increase event window to ensure full event capture
+
+    # Keep only the first threshold crossing of each event
+    event_beginnings = [high_ds[0]]  # first detected event
+    for idx in high_ds[1:]:
+        if idx - event_beginnings[-1] >= smaller_event_window:
+            event_beginnings.append(idx)
+    event_beginnings = np.array(event_beginnings)
+
+    # Mask out event windows
+    events_removed_mask = np.ones_like(t, dtype=bool)
+    for idx in event_beginnings:
+        end = min(idx + larger_event_window, len(events_removed_mask))
+        events_removed_mask[idx:end] = False
+    events_only_mask = ~events_removed_mask
+
+    events_removed_t = t[events_removed_mask]
+    events_removed_signal = signal[events_removed_mask]
+
+    return (
+        ds,
+        threshold,
+        event_beginnings,
+        events_removed_mask,
+        events_only_mask,
+        events_removed_t,
+        events_removed_signal,
+    )
+
+def _hampel_filter(signal, window_size, n_sigma=3):
+    filtered = signal.copy()
+    half = window_size // 2
+
+    for i in range(half, len(signal) - half):
+        window = signal[i-half:i+half+1]
+
+        median = np.median(window)
+        mad = np.median(np.abs(window - median))
+
+        if mad == 0:
+            continue
+
+        threshold = n_sigma * 1.4826 * mad
+
+        if np.abs(signal[i] - median) > threshold:
+            filtered[i] = median
+
+    return filtered
 
 def run_stiffness_pipeline(data: HiSTIFFSData, results_note: str='None') -> None:
     data.detect_stalks(plot=False)
@@ -1295,18 +1644,31 @@ def run_stiffness_pipeline(data: HiSTIFFSData, results_note: str='None') -> None
     data.save_stiffnesses(note=results_note)
 
 if __name__ == "__main__":
-    times = ['095206', '101147', '102124', '103017', '103800', '165625']
-    data = HiSTIFFSData(date="2026-07-24", time=times[1 - 1], debug=True)
+    times = ['095206', '101147', '102124', '103017', '103800']
+    data = HiSTIFFSData(date="2026-07-24", time=times[1], debug=True)
     if data.exists:
-        data.plot_raw_strains(combined=False)
+        # data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
         # data.calc_force_position(clip=False)
-        data.plot_force_position(combined=True)
+        # data.plot_force_position(combined=True)
         # plt.show()
 
         # data.interactive_detect_stalks()
         # run_stiffness_pipeline(data, results_note='dummy trials')
+
+        # +++ JOSH BELOW +++
+        show_plots = {
+            'Detect and Remove Events':True,
+            'Remove Outliers, Interpolate, Smooth':True,
+            'Compare Smooth vs Channel Independent Baseline Subtracted':True,
+            'Compare Channel Independent Baselines 1 & 2':True,
+            'Scatter Plot: derivative vs magnitude':(True,False),  # (show smoothed, include raw)
+            'Histogram: magnitude':(True,False),  # (show smoothed, include raw)
+            'Histogram: derivative':(True,False),  # (show smoothed, include raw)
+            'Scatter Plot: derivative vs magnitude (just events, channels combined)':True,
+        }
+        data.plot_baseline(show_plots)
 
         plt.show()
         # keyboard.wait('space')

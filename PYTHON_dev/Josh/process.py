@@ -1661,14 +1661,14 @@ if __name__ == "__main__":
         # +++ JOSH BELOW +++
         # data.plot_smooth()
         show_plots = {
-            'Detect and Remove Events':False,
+            'Detect and Remove Events':True,
             'Remove Outliers, Interpolate, Smooth':True,
-            'Compare Smooth vs Channel Independent Baseline Subtracted':False,
-            'Compare Channel Independent Baselines 1 & 2':False,
-            'Scatter Plot: derivative vs magnitude':(False,False),  # (show smoothed, include raw)
-            'Histogram: magnitude':(False,False),  # (show smoothed, include raw)
-            'Histogram: derivative':(False,False),  # (show smoothed, include raw)
-            'Scatter Plot: derivative vs magnitude (just events, channels combined)':False,
+            'Compare Smooth vs Channel Independent Baseline Subtracted':True,
+            'Compare Channel Independent Baselines 1 & 2':True,
+            'Scatter Plot: derivative vs magnitude':(True,False),  # (show smoothed, include raw)
+            'Histogram: magnitude':(True,False),  # (show smoothed, include raw)
+            'Histogram: derivative':(True,False),  # (show smoothed, include raw)
+            'Scatter Plot: derivative vs magnitude (just events, channels combined)':True,
         }
         data.plot_baseline(show_plots)
 
