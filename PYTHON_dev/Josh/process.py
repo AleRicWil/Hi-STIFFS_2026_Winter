@@ -287,12 +287,12 @@ class HiSTIFFSData:
                 c2 = float(self.sensor_info_dict[f'Sensor_{l}'][f'c{l}2'])
                 c2 = s['ini_2']  # override with actual initial value for better accuracy
 
-                num = k2*(s['strain_1_filter'] - c1) - k1*(s['strain_2_filter'] - c2)
+                num = k2*(s['strain_1_baseline_corrected']) - k1*(s['strain_2_baseline_corrected'])
                 den = k1*k2*(d2 - d1)
                 s['force'] = np.clip(np.where(np.abs(den) > 1e-12, num/den, 0.0), -84, 84) # santity check in Newtons
 
-                num = k2*d2*(s['strain_1_filter'] - c1) - k1*d1*(s['strain_2_filter'] - c2)
-                den = k2*(s['strain_1_filter'] - c1) - k1*(s['strain_2_filter'] - c2)                
+                num = k2*d2*(s['strain_1_baseline_corrected']) - k1*d1*(s['strain_2_baseline_corrected'])
+                den = k2*(s['strain_1_baseline_corrected']) - k1*(s['strain_2_baseline_corrected'])                
                 for i, val in enumerate(den):
                     if val >= 1e-6 and val <= 1e16:
                         den[i] = val
@@ -899,9 +899,9 @@ class HiSTIFFSData:
         zipped = zip(self.clean_stalks_time, self.clean_stalks_force,
                          self.clean_stalks_position, self.clean_stalks_probe_position)
     
-        parallel_deflection = self.data_dict[f'Sensor_C']['parallel_deflection']
+        parallel_deflection = self.data_dict[f'Sensor_B']['parallel_deflection']
         yaw_B = self.data_dict[f'Sensor_B']['abs(yaw)_rad']
-        yaw_D = self.data_dict[f'Sensor_D']['abs(yaw)_rad']
+        # yaw_D = self.data_dict[f'Sensor_D']['abs(yaw)_rad']
         beam_constant = self.height**3 / 3
         for i, stalk_trace_data in enumerate(zipped):
             print(f'Processing stalk {i+1}')
@@ -909,11 +909,12 @@ class HiSTIFFSData:
             for l in self.sensor_labels:
                 sensor_readings[l] = self.read_stalk_on_sensor(stalk_trace_data, l)
             estimate_1 = (sensor_readings['C'] - sensor_readings['A']) / parallel_deflection
-            estimate_2 = (sensor_readings['C'] - sensor_readings['E']) / parallel_deflection
+            # estimate_2 = (sensor_readings['C'] - sensor_readings['E']) / parallel_deflection
             estimate_3 = sensor_readings['B'] / np.sin(yaw_B) * np.cos(np.radians(38))
-            estimate_4 = sensor_readings['D'] / np.sin(yaw_D)
+            # estimate_4 = sensor_readings['D'] / np.sin(yaw_D)
 
-            estimates_raw = np.array([estimate_1, estimate_2, estimate_3, estimate_4]) * beam_constant
+            # estimates_raw = np.array([estimate_1, estimate_2, estimate_3, estimate_4]) * beam_constant
+            estimates_raw = np.array([estimate_1, estimate_3]) * beam_constant
             # print(estimates_raw)
             estimates_filt = []
             for estimate in estimates_raw:
@@ -1285,21 +1286,28 @@ class HiSTIFFSData:
             writer.writerow(header)
 
             for i in range(self.num_stalks):
-                row = [i+1, self.stiffnesses[i], self.estimates[i][0], self.estimates[i][1], self.estimates[i][2], self.estimates[i][3]]
+                row = [
+                    i+1,
+                    self.stiffnesses[i],
+                    self.estimates[i][0],
+                    self.estimates[i][1],
+                    # self.estimates[i][2],
+                    # self.estimates[i][3]
+                    ]
                 writer.writerow(row)
 
         print(f'Wrote stiffness results to {self.results_path}')
 
     # +++ additional functions, reorganize later... +++
 
-    def plot_baseline(self, show_plots):
+    def moving_baseline(self, show_plots={}):
         # function globals
         SAMPLE_RATE = 535  # Hz
         SENSOR_SPEED_FPM = 25 # feet per minute
         STALK_CONTACT_PERIOD = 0.78 # seconds, based on 25 fpm
 
         print('*'*80)
-        print('plot_baseline()')
+        print('moving_baseline()')
         print(f'{SAMPLE_RATE=}, {SENSOR_SPEED_FPM=}, {STALK_CONTACT_PERIOD=}')
         
         for label in self.sensor_labels:
@@ -1344,7 +1352,7 @@ class HiSTIFFSData:
             print(f'{len(event_beginnings2)} events detected for Sensor {label} channel 2')
 
             ####################################################################################################
-            if show_plots['Detect and Remove Events']:
+            if show_plots.get('Detect and Remove Events', False):
                 _, ax = plt.subplots(2, 2, sharex=True, figsize=(12, 7), constrained_layout=True)
 
                 ax[0, 0].plot(t, s1, label='Raw Strain 1', alpha=0.5, linewidth=0.4)
@@ -1381,56 +1389,56 @@ class HiSTIFFSData:
             kernel_size = int(window_sec * SAMPLE_RATE)  # convert to samples
             if kernel_size % 2 == 0:
                 kernel_size += 1  # ensure kernel size is odd
-            hampel_baseline1 = _hampel_filter(events_removed_y1, window_size=kernel_size)
-            hampel_baseline2 = _hampel_filter(events_removed_y2, window_size=kernel_size)
+            # hampel_baseline1 = _hampel_filter(events_removed_y1, window_size=kernel_size)
+            # hampel_baseline2 = _hampel_filter(events_removed_y2, window_size=kernel_size)
             medfilt_baseline1 = medfilt(events_removed_y1, kernel_size=kernel_size)
             medfilt_baseline2 = medfilt(events_removed_y2, kernel_size=kernel_size)
 
             # Interpolate across the removed event windows
             interp1 = PchipInterpolator(events_removed_t1, medfilt_baseline1)
             interp2 = PchipInterpolator(events_removed_t2, medfilt_baseline2)
-            interp1h = PchipInterpolator(events_removed_t1, hampel_baseline1)
-            interp2h = PchipInterpolator(events_removed_t2, hampel_baseline2)
+            # interp1h = PchipInterpolator(events_removed_t1, hampel_baseline1)
+            # interp2h = PchipInterpolator(events_removed_t2, hampel_baseline2)
 
             interp_baseline1 = interp1(t)
             interp_baseline2 = interp2(t)
-            interp_baseline1h = interp1h(t)
-            interp_baseline2h = interp2h(t)
+            # interp_baseline1h = interp1h(t)
+            # interp_baseline2h = interp2h(t)
 
             # Apply Gaussian filter
             sigma = kernel_size / 6  # standard deviation for Gaussian filter, default is 1/6 of kernel size (# ~99.7% of Gaussian spans kernel)
 
             gaussian_baseline1 = gaussian_filter1d(interp_baseline1, sigma=sigma)
             gaussian_baseline2 = gaussian_filter1d(interp_baseline2, sigma=sigma)
-            gaussian_baseline1h = gaussian_filter1d(interp_baseline1h, sigma=sigma)
-            gaussian_baseline2h = gaussian_filter1d(interp_baseline2h, sigma=sigma)
+            # gaussian_baseline1h = gaussian_filter1d(interp_baseline1h, sigma=sigma)
+            # gaussian_baseline2h = gaussian_filter1d(interp_baseline2h, sigma=sigma)
 
             ####################################################################################################
-            if show_plots['Remove Outliers, Interpolate, Smooth']:
+            if show_plots.get('Remove Outliers, Interpolate, Smooth', False):
                 _, ax = plt.subplots(2, 2, sharex=True, figsize=(12, 7), constrained_layout=True)
                 ax[0, 0].plot(events_removed_t1, events_removed_y1, label='Events Removed', linewidth=0.4)
                 ax[0, 0].plot(events_removed_t1, medfilt_baseline1, label='Medfilt', linewidth=0.4)
-                ax[0, 0].plot(events_removed_t1, hampel_baseline1, label='Hampel', linewidth=0.4)
+                # ax[0, 0].plot(events_removed_t1, hampel_baseline1, label='Hampel', linewidth=0.4)
                 ax[0, 0].plot(t, interp_baseline1, label='Interpolated', linewidth=0.4)
                 ax[0, 0].plot(t, gaussian_baseline1, label='Channel Independent Baseline', linewidth=2)
-                ax[0, 0].plot(t, gaussian_baseline1h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                # ax[0, 0].plot(t, gaussian_baseline1h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
                 ax[0, 0].set_title('Remove Outliers, Interpolate, Smooth: Sensor ' + label + ' Channel 1')
 
                 ax[0, 1].plot(t, gaussian_baseline1, label='Channel Independent Baseline', linewidth=2)
-                ax[0, 1].plot(t, gaussian_baseline1h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                # ax[0, 1].plot(t, gaussian_baseline1h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
                 ax[0, 1].plot(t, smooth1, label='Smooth 1', linewidth=0.4)
                 ax[0, 1].set_title('Smooth Strain vs Channel Independent Baseline: Sensor ' + label + ' Channel 1')
 
                 ax[1, 0].plot(events_removed_t2, events_removed_y2, label='Events Removed', linewidth=0.4)
                 ax[1, 0].plot(events_removed_t2, medfilt_baseline2, label='Medfilt', linewidth=0.4)
-                ax[1, 0].plot(events_removed_t2, hampel_baseline2, label='Hampel', linewidth=0.4)
+                # ax[1, 0].plot(events_removed_t2, hampel_baseline2, label='Hampel', linewidth=0.4)
                 ax[1, 0].plot(t, interp_baseline2, label='Interpolated', linewidth=0.4)
                 ax[1, 0].plot(t, gaussian_baseline2, label='Channel Independent Baseline', linewidth=2)
-                ax[1, 0].plot(t, gaussian_baseline2h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                # ax[1, 0].plot(t, gaussian_baseline2h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
                 ax[1, 0].set_title('Remove Outliers, Interpolate, Smooth: Sensor ' + label + ' Channel 2')
 
                 ax[1, 1].plot(t, gaussian_baseline2, label='Channel Independent Baseline', linewidth=2)
-                ax[1, 1].plot(t, gaussian_baseline2h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
+                # ax[1, 1].plot(t, gaussian_baseline2h, label='Channel Independent Baseline (Hampel)', linewidth=2, linestyle='--')
                 ax[1, 1].plot(t, smooth2, label='Smooth 2', linewidth=0.4)
                 ax[1, 1].set_title('Smooth Strain vs Channel Independent Baseline: Sensor ' + label + ' Channel 2')
 
@@ -1446,8 +1454,12 @@ class HiSTIFFSData:
             smooth1_translated = smooth1 - np.median(gaussian_baseline1)
             smooth2_translated = smooth2 - np.median(gaussian_baseline2)
 
+            # save the baseline corrected smooth data to the data_dict for later use
+            self.data_dict[sensor]['strain_1_baseline_corrected'] = smooth1_adjusted
+            self.data_dict[sensor]['strain_2_baseline_corrected'] = smooth2_adjusted
+
             ####################################################################################################
-            if show_plots['Compare Smooth vs Channel Independent Baseline Subtracted']:
+            if show_plots.get('Compare Smooth vs Channel Independent Baseline Subtracted', False):
                 _, ax = plt.subplots(1, 2, sharex=True, figsize=(12, 7), constrained_layout=True)
                 ax[0].plot(t, smooth1_adjusted, label='Smooth 1 - Channel Independent Baseline', linewidth=0.4)
                 ax[0].plot(t, smooth1_translated, label='Smooth 1', linewidth=0.4, alpha=0.5)
@@ -1467,7 +1479,7 @@ class HiSTIFFSData:
             gaussian_baseline2_translated = gaussian_baseline2 - np.median(gaussian_baseline2)
 
             ####################################################################################################
-            if show_plots['Compare Channel Independent Baselines 1 & 2']:
+            if show_plots.get('Compare Channel Independent Baselines 1 & 2', False):
                 _, ax = plt.subplots(1, 2, sharex=True, figsize=(12, 7), constrained_layout=True)
                 ax[0].plot(t, gaussian_baseline1, label='Channel Independent Baseline 1', linewidth=0.4)
                 ax[0].plot(t, gaussian_baseline2, label='Channel Independent Baseline 2', linewidth=0.4)
@@ -1484,8 +1496,8 @@ class HiSTIFFSData:
                     a.legend(loc='upper right')
 
             ####################################################################################################
-            if show_plots['Scatter Plot: derivative vs magnitude'][0]:
-                if show_plots['Scatter Plot: derivative vs magnitude'][1]:
+            if show_plots.get('Scatter Plot: derivative vs magnitude', [False])[0]:
+                if show_plots.get('Scatter Plot: derivative vs magnitude', [False, False])[1]:
                     _, ax = plt.subplots(2, 2, figsize=(12, 7), sharex=True, constrained_layout=True)
                 else:
                     _, ax = plt.subplots(1, 2, figsize=(12, 7), sharex=True, constrained_layout=True, squeeze=False)
@@ -1496,7 +1508,7 @@ class HiSTIFFSData:
                 ax[0, 1].scatter(dsmooth2, smooth2, s=2, alpha=0.3)
                 ax[0, 1].set_title(f'Derivative vs Magnitude: Sensor {label} Channel 2 (smoothed)')
 
-                if show_plots['Scatter Plot: derivative vs magnitude'][1]:
+                if show_plots.get('Scatter Plot: derivative vs magnitude', [False, False])[1]:
                     ax[1, 0].scatter(ds1, s1, s=2, alpha=0.3)
                     ax[1, 0].set_title(f'Derivative vs Magnitude: Sensor {label} Channel 1 (Raw)')
 
@@ -1510,8 +1522,8 @@ class HiSTIFFSData:
                     # a.set_yscale('log')
 
             ####################################################################################################
-            if show_plots['Histogram: magnitude'][0]:
-                if show_plots['Histogram: magnitude'][1]:
+            if show_plots.get('Histogram: magnitude', [False])[0]:
+                if show_plots.get('Histogram: magnitude', [False, False])[1]:
                     _, ax = plt.subplots(2, 2, figsize=(12, 7), sharex=True, constrained_layout=True)
                 else:
                     _, ax = plt.subplots(1, 2, figsize=(12, 7), sharex=True, constrained_layout=True, squeeze=False)
@@ -1522,7 +1534,7 @@ class HiSTIFFSData:
                 ax[0,1].hist(smooth2, bins=100, alpha=0.7)
                 ax[0,1].set_title(f'Histogram: Sensor {label} Channel 2 (smoothed)')
                 
-                if show_plots['Histogram: magnitude'][1]:
+                if show_plots.get('Histogram: magnitude', [False, False])[1]:
                     ax[1,0].hist(s1, bins=100, alpha=0.7)
                     ax[1,0].set_title(f'Histogram: Sensor {label} Channel 1 (Raw)')
 
@@ -1535,8 +1547,8 @@ class HiSTIFFSData:
                     # a.set_yscale('log')
 
             ####################################################################################################
-            if show_plots['Histogram: derivative'][0]:
-                if show_plots['Histogram: derivative'][1]:
+            if show_plots.get('Histogram: derivative', [False])[0]:
+                if show_plots.get('Histogram: derivative', [False, False])[1]:
                     _, ax = plt.subplots(2, 2, figsize=(12, 7), sharex=True, constrained_layout=True)
                 else:
                     _, ax = plt.subplots(1, 2, figsize=(12, 7), sharex=True, constrained_layout=True, squeeze=False)
@@ -1549,7 +1561,7 @@ class HiSTIFFSData:
                 ax[0, 1].axvline(derivative_threshold2, color='red', linestyle='--', label='Threshold')
                 ax[0, 1].set_title(f'Histogram: Sensor {label} Channel 2')
 
-                if show_plots['Histogram: derivative'][1]:
+                if show_plots.get('Histogram: derivative', [False, False])[1]:
                     ax[1, 0].hist(np.gradient(s1, t), bins=100, alpha=0.7)
                     ax[1, 0].set_title(f'Histogram: Sensor {label} Channel 1 (Raw)')
 
@@ -1563,7 +1575,7 @@ class HiSTIFFSData:
                     a.set_yscale('log')
                 
             ####################################################################################################
-            if show_plots['Scatter Plot: derivative vs magnitude (just events, channels combined)']:
+            if show_plots.get('Scatter Plot: derivative vs magnitude (just events, channels combined)', False):
                 _, ax = plt.subplots(1, 1, figsize=(12, 7), sharex=True, constrained_layout=True)
                 # ax[0].scatter(dsmooth1[event_beginnings1], smooth1[event_beginnings1], s=10, alpha=0.7, c='orange')
                 ax.plot(t[events_only_mask1], smooth1_translated[events_only_mask1], 'o', markersize=0.4, alpha=0.7, c='green')
@@ -1638,13 +1650,19 @@ def _hampel_filter(signal, window_size, n_sigma=3):
     return filtered
 
 def run_stiffness_pipeline(data: HiSTIFFSData, results_note: str='None') -> None:
+    # Baseline removal is the first useful preprocessing step for strain traces.
+    # The returned corrected values are stored on the data object and also written
+    # to the sensor dictionaries so downstream stages can access them.
+    baseline_result = data.moving_baseline()
+    if baseline_result is not None:
+        data.baseline_result = baseline_result
+
     data.detect_stalks(plot=False)
     # data.plot_detections(filter_level='clean')
     data.estimate_all_stalks_stiffness()
     data.save_stiffnesses(note=results_note)
 
 if __name__ == "__main__":
-    # +++ Best data from feild test is times[1] +++
     times = ['095206', '101147', '102124', '103017', '103800']
     data = HiSTIFFSData(date="2026-07-24", time=times[1], debug=True)
     if data.exists:
@@ -1659,39 +1677,17 @@ if __name__ == "__main__":
         # run_stiffness_pipeline(data, results_note='dummy trials')
 
         # +++ JOSH BELOW +++
-        # data.plot_smooth()
         show_plots = {
             'Detect and Remove Events':True,
             'Remove Outliers, Interpolate, Smooth':True,
             'Compare Smooth vs Channel Independent Baseline Subtracted':True,
             'Compare Channel Independent Baselines 1 & 2':True,
-            'Scatter Plot: derivative vs magnitude':(True,False),  # (show smoothed, include raw)
-            'Histogram: magnitude':(True,False),  # (show smoothed, include raw)
-            'Histogram: derivative':(True,False),  # (show smoothed, include raw)
+            'Scatter Plot: derivative vs magnitude':(True,True),  # (show smoothed, include raw)
+            'Histogram: magnitude':(True,True),  # (show smoothed, include raw)
+            'Histogram: derivative':(True,True),  # (show smoothed, include raw)
             'Scatter Plot: derivative vs magnitude (just events, channels combined)':True,
         }
-        data.plot_baseline(show_plots)
+        data.moving_baseline(show_plots)
 
         plt.show()
         # keyboard.wait('space')
-
-    # +++ Lab 25/50/100 fpm +++
-    # times = ['135242','140321','140422']
-    # for time in times:
-    #     data = HiSTIFFSData(date="2026-07-14", time=time, debug=True)
-    #     if data.exists:
-    #         # data.plot_raw_strains(combined=False)
-    #         # data.describe_channels()
-    #         # data.shift_initials()
-    #         # data.calc_force_position(clip=False)
-    #         # data.plot_force_position(combined=True)
-    #         # plt.show()
-
-    #         # data.interactive_detect_stalks()
-    #         # run_stiffness_pipeline(data, results_note='dummy trials')
-
-    #         # +++ JOSH BELOW +++
-    #         data.plot_baseline()
-
-    #     plt.show()
-    #     # keyboard.wait('space')
