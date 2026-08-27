@@ -148,6 +148,20 @@
 #define F_CS_PIN   A2
 #define F_DRDY_PIN A3
 
+// #define A_CS_PIN   4
+// #define A_DRDY_PIN 3
+// #define B_CS_PIN   2
+// #define B_DRDY_PIN A1
+// #define C_CS_PIN   A2
+// #define C_DRDY_PIN A3
+
+// #define D_CS_PIN   10
+// #define D_DRDY_PIN 9
+// #define E_CS_PIN   8
+// #define E_DRDY_PIN 7
+// #define F_CS_PIN   6
+// #define F_DRDY_PIN 5
+
 #define IMU_CS_PIN  A4                    // GPIO A4 drives the active-low CS pin of the ISM330DHCX only; held high except during its own SPI transactions so the shared bus remains collision-free
 #define MAG_CS_PIN  A5                    // GPIO A5 drives the active-low CS pin of the LIS3MDL only; independent from IMU_CS_PIN so either device can be selected while the other stays deselected
 
@@ -185,7 +199,7 @@ const uint8_t  TARGET_ACCEL_FS_G   = 8;     // Options: 2, 4, 8, 16
 const uint16_t TARGET_GYRO_FS_DPS  = 2000;  // Options: 125, 250, 500, 1000, 2000, 4000
 const uint8_t  TARGET_MAG_FS_GAUSS = 12;    // Options: 4, 8, 12, 16
 
-const uint32_t LED_FLASH_PERIOD_US = 1000000UL;  // 1 second
+const uint32_t LED_FLASH_PERIOD_US = 3000000UL;  // 3 seconds
 const uint32_t LED_ON_DURATION_US  = 100000UL;    // 100 ms visible flash
 
 volatile bool g_led_on = false;
@@ -385,6 +399,7 @@ void IRAM_ATTR readADS1220(int idx, int cs_pin, uint8_t* buffer) {
   // Open SPI with sensor's ADS1220 chip/module
   SPI.beginTransaction(sensorSPI_ICB);       // Get SPI open with settings
   digitalWrite(cs_pin, LOW);              // Select particular sensor (cs='chip select')
+  // delayMicroseconds(10);
 
   // Retrieve 3 byte (24-bit) ADC result    
   // SPI.transfer(buffer, 3); is not stable for reading from this chip        
@@ -403,6 +418,7 @@ void IRAM_ATTR readADS1220(int idx, int cs_pin, uint8_t* buffer) {
 
   // Close SPI
   digitalWrite(cs_pin, HIGH);             // Release sensor from SPI
+  // delayMicroseconds(10);
   SPI.endTransaction();                     // Release Nano's SPI bus
 }
 
@@ -676,42 +692,52 @@ bool detectADS1220(int csPin) {
 
     SPI.beginTransaction(sensorSPI_ICB);
     digitalWrite(csPin, LOW);
+    delayMicroseconds(10);
     SPI.transfer(0x06);                   // RESET
     digitalWrite(csPin, HIGH);
+    delayMicroseconds(10);
     SPI.endTransaction();
 
-    delayMicroseconds(300);
+    delay(3000);
 
     // --- Step 1: Read current value so we can restore it later ---
     SPI.beginTransaction(sensorSPI_ICB);
     digitalWrite(csPin, LOW);
+    delayMicroseconds(10);
     SPI.transfer(ICB_RREG | (TEST_REG << 2) | 0);
     uint8_t original_val = SPI.transfer(SPI_MASTER_DUMMY);
     digitalWrite(csPin, HIGH);
+    delayMicroseconds(10);
     SPI.endTransaction();
 
     // --- Step 2: Write test pattern ---
     SPI.beginTransaction(sensorSPI_ICB);
     digitalWrite(csPin, LOW);
+    delayMicroseconds(10);
     SPI.transfer(ICB_WREG | (TEST_REG << 2) | 0);   // WREG starting at TEST_REG, 1 register
     SPI.transfer(TEST_PATTERN);
     digitalWrite(csPin, HIGH);
+    delayMicroseconds(10);
     SPI.endTransaction();
 
     // --- Step 3: Read it back ---
     SPI.beginTransaction(sensorSPI_ICB);
     digitalWrite(csPin, LOW);
+    delayMicroseconds(10);
     SPI.transfer(ICB_RREG | (TEST_REG << 2) | 0);
     uint8_t readback = SPI.transfer(SPI_MASTER_DUMMY);
     digitalWrite(csPin, HIGH);
+    delayMicroseconds(10);
     SPI.endTransaction();
 
     // --- Step 4: Restore original value (best practice) ---
     SPI.beginTransaction(sensorSPI_ICB);
     digitalWrite(csPin, LOW);
+    delayMicroseconds(10);
     SPI.transfer(ICB_WREG | (TEST_REG << 2) | 0);
     SPI.transfer(original_val);
     digitalWrite(csPin, HIGH);
+    delayMicroseconds(10);
     SPI.endTransaction();
 
     // Success only if the chip echoed back exactly what we wrote
@@ -722,6 +748,8 @@ bool detectADS1220(int csPin) {
         // (helps distinguish "no chip" from "very noisy bus")
     }
 
+    // Serial.println("Forced return true.");
+    // return true;
     return detected;
 }
 
@@ -740,9 +768,11 @@ bool bringup_ICB_sensors() {
         int cs = all_configs[i].cs_pin;
         pinMode(cs, OUTPUT);
         digitalWrite(cs, HIGH);           // ensure deselected
+        delayMicroseconds(10);
 
         bool present = detectADS1220(cs);
         digitalWrite(cs, HIGH);           // ensure deselected
+        delayMicroseconds(10);
 
         if (present) {
             Serial.printf("  ADS1220 '%c' (CS=%d) : OK\n",
@@ -959,9 +989,11 @@ bool bringup_MAG() {
 void writeRegister(int csPin, uint8_t regAddr, uint8_t value) {
   spiIMU.beginTransaction(sensorSPI_IMU_MAG);
   digitalWrite(csPin, LOW);
+  delayMicroseconds(10);
   spiIMU.transfer(regAddr & 0x7F);   // write
   spiIMU.transfer(value);
   digitalWrite(csPin, HIGH);
+  delayMicroseconds(10);
   spiIMU.endTransaction();
 }
 
@@ -1193,26 +1225,10 @@ void SamplingTask(void *pvParameters) {
     for (;;) {
         if (xSemaphoreTake(samplingSemaphore_IMU, pdMS_TO_TICKS(2)) == pdTRUE) {
             if (g_isConnected) {
+              uint32_t timestamp_us = (uint32_t)(esp_timer_get_time() - time_init);   // cast is safe; we only ever send the low 32 bits
               if (imu_mag_present) {
                 portDISABLE_INTERRUPTS(); // Prevent ICB DRDY interrupts during this read
                 // === IMU sample (always happens at hardware-timed rate) ===
-                uint32_t timestamp_us = (uint32_t)(esp_timer_get_time() - time_init);   // cast is safe; we only ever send the low 32 bits
-
-                // === LED flash logic (runs at IMU rate, extremely cheap) ===
-
-                if (!g_led_on) {
-                    if (timestamp_us - last_led_toggle_us >= LED_FLASH_PERIOD_US) {
-                        digitalWrite(LED_PIN, HIGH);
-                        g_led_on = true;
-                        last_led_toggle_us = timestamp_us;
-                        // Optional: you can also set a flag that gets packed into the next packet
-                    }
-                } else {
-                    if (timestamp_us - last_led_toggle_us >= LED_ON_DURATION_US) {
-                        digitalWrite(LED_PIN, LOW);
-                        g_led_on = false;
-                    }
-                }
 
                 int16_t gx, gy, gz, ax, ay, az;
                 readIMU(gx, gy, gz, ax, ay, az);
@@ -1238,6 +1254,22 @@ void SamplingTask(void *pvParameters) {
               if (checkICB_AllDataReady() && g_use_icb_sensors) {
                 queueDataPacket_ICB();
               }
+
+              // === LED flash logic (runs at IMU rate, extremely cheap) ===
+
+              if (!g_led_on) {
+                  if (timestamp_us - last_led_toggle_us >= LED_FLASH_PERIOD_US) {
+                      digitalWrite(LED_PIN, HIGH);
+                      g_led_on = true;
+                      last_led_toggle_us = timestamp_us;
+                      // Optional: you can also set a flag that gets packed into the next packet
+                      }
+                  } else {
+                      if (timestamp_us - last_led_toggle_us >= LED_ON_DURATION_US) {
+                          digitalWrite(LED_PIN, LOW);
+                          g_led_on = false;
+                        }
+                }
             }
         }
     }
@@ -1284,17 +1316,17 @@ void setup() {
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
 
-  delay(1000);
+  delay(200);
   digitalWrite(LED_PIN, HIGH);
-  delay(1000);
+  delay(200);
   digitalWrite(LED_PIN, LOW);
-  delay(1000);
+  delay(200);
   digitalWrite(LED_PIN, HIGH);
-  delay(1000);
+  delay(200);
   digitalWrite(LED_PIN, LOW);
-  delay(1000);
+  delay(200);
   digitalWrite(LED_PIN, HIGH);
-  delay(1000);
+  delay(200);
   digitalWrite(LED_PIN, LOW);
 
   if (hasSerial) {

@@ -142,10 +142,12 @@ class WiFiDataServer(QtCore.QObject):
 
                 post_data = self._read_fully(conn, length)
                 if len(post_data) != length:
+                    print(f'[WifiDataServer] Mismatch stated packet length and actual length from Nano_{nano_id:02d}')
                     continue
 
                 computed_crc = self._crc16_ccitt(post_data)
                 if computed_crc != received_crc:
+                    print(f'[WifiDataServer] Bad CRC from Nano_{nano_id:02d}')
                     continue
 
                 # Route by nano_id (first byte of the sensor payload)
@@ -1374,17 +1376,17 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: field hardware test",
+        "Note: Chesterfiled repeatability runs",
         "Test Type: Shakedown",
-        "Stalks: Plot 200-end (X-tra) SN, Probe: v4.1, Speed: 50ft/s",
-        # "Loads (N): 5 35 70, Positions (mm): 60 100 120 154",
-        "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_330SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
+        "Stalks: Airport Field, Probe: v4.1, Speed: 1.2mph",
+        # "Loads (N): 4.905 9.81 49.05, Positions (mm): 60 100 150",
+        "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_600SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
     run_collection( nano_id=[1],
                     sensors=["A B C"],
-                    sensor_sns=["101 102 103"],
-                    probe_height_m=[0.840],
+                    sensor_sns=["113 114 115"],
+                    probe_height_m=[0.857],
                     header_content=[example_header_content],
                     show_raw_strains=False,
                     imu_mode=False)

@@ -511,11 +511,11 @@ if __name__ == "__main__":
     #              r'Hi-STIFFS_2026_Winter\Raw Data\2026-02-13\2026-02-13_163945_01.csv']
     # generate_summary(old_paths)
 
-    path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-07-13\2026-07-13_144751_01.csv'
-    sum_path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-07-13\calibration_103.csv'
+    path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-08-25\2026-08-25_131508_01.csv'
+    sum_path = r'Hi-STIFFS_2026_Winter\Raw Data\2026-08-25\calibration_115.csv'
 
-    # zero_shift_correction(path, sensor_label='C')
-    # summary_from_dwells(path, sensor_label='C')
+    # zero_shift_correction(path, sensor_label='A')
+    summary_from_dwells(path, sensor_label='A')
     calculate_coefficients(sum_path)
 
     

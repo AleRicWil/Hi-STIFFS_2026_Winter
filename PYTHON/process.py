@@ -1295,10 +1295,10 @@ def run_stiffness_pipeline(data: HiSTIFFSData, results_note: str='None') -> None
     data.save_stiffnesses(note=results_note)
 
 if __name__ == "__main__":
-    times = ['095206', '101147', '102124', '103017', '103800', '165625']
-    data = HiSTIFFSData(date="2026-07-24", time=times[1 - 1], debug=True)
+    times = ['150300', '150312', '150636', '150807', '151203', '151326', '152754']
+    data = HiSTIFFSData(date="2026-08-14", time=times[7 - 1], debug=True)
     if data.exists:
-        data.plot_raw_strains(combined=False)
+        # data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
         # data.calc_force_position(clip=False)
@@ -1306,7 +1306,7 @@ if __name__ == "__main__":
         # plt.show()
 
         # data.interactive_detect_stalks()
-        # run_stiffness_pipeline(data, results_note='dummy trials')
+        # run_stiffness_pipeline(data, results_note='shakedown trials')
 
         plt.show()
         # keyboard.wait('space')
