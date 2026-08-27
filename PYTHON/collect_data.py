@@ -1004,6 +1004,8 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
     IMU_RATE_HZ = 3000         # conservative upper bound for maxlen calc
     MAG_RATE_HZ = 1000
     PLOT_WINDOW_S = 3.0         # longer horizon than ICB for IMU validation
+    DISPLAY_HZ = 1500            # max samples/sec kept in plot buffers
+    ACCEL_DISPLAY_HZ = 60      # accel is noisier; draw it even thinner
 
     def __init__(self, data_receiver_writer, plot_window_s: float = PLOT_WINDOW_S):
         super().__init__()
@@ -1015,8 +1017,11 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
         self.start_ts_us = None
         self.pkt_count = 0
         self._last_t = None
-        self.rescale_interval = 0.5
+        self.rescale_interval = 1.5
         self.last_y_rescale_time = 0.0
+        self._plot_keep_n = 0           # ICB-style decimation counter
+        self._display_stride = 1        # set after first two packets
+        self._accel_stride = 1
 
         # -----------------------------------------------------------------
         # ROLLING BUFFERS (deque with maxlen = efficient ring buffer)
@@ -1024,7 +1029,8 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
         # Same strategy as IMUMonitor and as the ICB deques in RealTimePlotWindow.
         # maxlen gives automatic oldest-sample drop. Extra headroom so we can
         # scroll smoothly while the visible window is only plot_window_s seconds.
-        maxlen = int(plot_window_s * self.IMU_RATE_HZ * 1.1) + 200
+            # Size buffers for *display* rate, not the 3 kHz worst-case packet rate
+        maxlen = int(plot_window_s * self.DISPLAY_HZ * 1.1) + 200
         self.t_buf   = collections.deque(maxlen=maxlen)
         self.gx_buf  = collections.deque(maxlen=maxlen)
         self.gy_buf  = collections.deque(maxlen=maxlen)
@@ -1083,6 +1089,15 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
         self.mz_curve = self.mag_plot.plot(pen=pg.mkPen('b', width=1.5), name='mz')
         layout.addWidget(self.mag_plot, stretch=1)
 
+        # Downsample and Clip plot curves
+        for curve in (
+            self.gx_curve, self.gy_curve, self.gz_curve,
+            self.ax_curve, self.ay_curve, self.az_curve,
+            self.mx_curve, self.my_curve, self.mz_curve,
+        ):
+            curve.setDownsampling(method='peak', auto=True)
+            curve.setClipToView(True)
+
         # Link X axes so all three plots scroll together (critical for pose window analysis)
         self.accel_plot.setXLink(self.gyro_plot)
         self.mag_plot.setXLink(self.gyro_plot)
@@ -1098,7 +1113,7 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
             pg.setConfigOptions(useOpenGL=False)
             print("[IMUPlotWindow] Raspberry Pi 5 detected — using reduced refresh + no OpenGL")
         else:
-            self.plot_refresh_hz = 40.0
+            self.plot_refresh_hz = 15.0
             pg.setConfigOptions(useOpenGL=True, antialias=False)
 
         self.plot_timer = QtCore.QTimer()
@@ -1181,57 +1196,55 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
                 self._update_status()
 
     def _update_plots(self):
-        """Called at 12-40 Hz by QTimer. Only here do we pay the numpy cost."""
-        if len(self.t_buf) < 2:
+        """Called at 12-30 Hz by QTimer. Convert deques once; draw visible window only."""
+        n = len(self.t_buf)
+        if n < 2:
             return
 
         t_arr = np.fromiter(self.t_buf, dtype=np.float64)
         t_max = t_arr[-1]
-
-        # Auto-scrolling rolling window (exactly the UX from the serial monitor)
         x_min = max(0.0, t_max - self.plot_window_s)
+        i0 = int(np.searchsorted(t_arr, x_min))
+        t_vis = t_arr[i0:]
+
         self.gyro_plot.setXRange(x_min, t_max, padding=0)
-        # --- 1-second Y auto-rescale for all three IMU plots ---
+
+        gx = np.fromiter(self.gx_buf, dtype=np.int16)
+        gy = np.fromiter(self.gy_buf, dtype=np.int16)
+        gz = np.fromiter(self.gz_buf, dtype=np.int16)
+        ax = np.fromiter(self.ax_buf, dtype=np.int16)
+        ay = np.fromiter(self.ay_buf, dtype=np.int16)
+        az = np.fromiter(self.az_buf, dtype=np.int16)
+        mx = np.fromiter(self.mx_buf, dtype=np.int16)
+        my = np.fromiter(self.my_buf, dtype=np.int16)
+        mz = np.fromiter(self.mz_buf, dtype=np.int16)
+
+        self.gx_curve.setData(t_vis, gx[i0:])
+        self.gy_curve.setData(t_vis, gy[i0:])
+        self.gz_curve.setData(t_vis, gz[i0:])
+        self.ax_curve.setData(t_vis, ax[i0:])
+        self.ay_curve.setData(t_vis, ay[i0:])
+        self.az_curve.setData(t_vis, az[i0:])
+        self.mx_curve.setData(t_vis, mx[i0:])
+        self.my_curve.setData(t_vis, my[i0:])
+        self.mz_curve.setData(t_vis, mz[i0:])
+
         now = time.time()
         if now - self.last_y_rescale_time >= self.rescale_interval:
-            x_min = max(0.0, t_max - self.plot_window_s)
-            x_max = t_max
-
-            # Gyro
-            self._rescale_imu_plot_y(self.gyro_plot, self.gx_buf, self.gy_buf, self.gz_buf, x_min, x_max)
-            # Accel
-            self._rescale_imu_plot_y(self.accel_plot, self.ax_buf, self.ay_buf, self.az_buf, x_min, x_max)
-            # Mag
-            self._rescale_imu_plot_y(self.mag_plot, self.mx_buf, self.my_buf, self.mz_buf, x_min, x_max)
-
+            self._rescale_from_arrays(self.gyro_plot, gx[i0:], gy[i0:], gz[i0:])
+            self._rescale_from_arrays(self.accel_plot, ax[i0:], ay[i0:], az[i0:])
+            self._rescale_from_arrays(self.mag_plot, mx[i0:], my[i0:], mz[i0:])
             self.last_y_rescale_time = now
 
-        # Update all nine curves — very cheap setData after the fromiter
-        self.gx_curve.setData(t_arr, np.fromiter(self.gx_buf, dtype=np.int16))
-        self.gy_curve.setData(t_arr, np.fromiter(self.gy_buf, dtype=np.int16))
-        self.gz_curve.setData(t_arr, np.fromiter(self.gz_buf, dtype=np.int16))
-
-        self.ax_curve.setData(t_arr, np.fromiter(self.ax_buf, dtype=np.int16))
-        self.ay_curve.setData(t_arr, np.fromiter(self.ay_buf, dtype=np.int16))
-        self.az_curve.setData(t_arr, np.fromiter(self.az_buf, dtype=np.int16))
-
-        self.mx_curve.setData(t_arr, np.fromiter(self.mx_buf, dtype=np.int16))
-        self.my_curve.setData(t_arr, np.fromiter(self.my_buf, dtype=np.int16))
-        self.mz_curve.setData(t_arr, np.fromiter(self.mz_buf, dtype=np.int16))
-
-    def _rescale_imu_plot_y(self, plot_widget, buf_x, buf_y, buf_z, x_min, x_max):
-        """Set Y range to min/max of the three axes that are currently visible."""
-        visible = []
-        for t, gx, gy, gz in zip(self.t_buf, buf_x, buf_y, buf_z):
-            if x_min <= t <= x_max:
-                visible.extend([gx, gy, gz])
-
-        if visible:
-            y_min = min(visible)
-            y_max = max(visible)
-            span = y_max - y_min
-            padding = max(0.08 * span, 5) if span > 0 else 10   # small fixed padding works well for raw int16
-            plot_widget.setYRange(y_min - padding, y_max + padding)
+    def _rescale_from_arrays(self, plot_widget, x, y, z):
+        """Set Y range from already-sliced visible int16 arrays (no deque scan)."""
+        if x.size == 0:
+            return
+        y_min = float(min(x.min(), y.min(), z.min()))
+        y_max = float(max(x.max(), y.max(), z.max()))
+        span = y_max - y_min
+        padding = max(0.08 * span, 5) if span > 0 else 10
+        plot_widget.setYRange(y_min - padding, y_max + padding)
 
     def _update_status(self, extra: str = ""):
         if len(self.t_buf) < 2:
@@ -1376,19 +1389,19 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: Chesterfiled repeatability runs",
+        "Note: Hotel testing",
         "Test Type: Shakedown",
-        "Stalks: Airport Field, Probe: v4.1, Speed: 1.2mph",
+        "Stalks: None, Probe: v4.1, Speed: None",
         # "Loads (N): 4.905 9.81 49.05, Positions (mm): 60 100 150",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_600SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
-    run_collection( nano_id=[1],
+    run_collection( nano_id=[2],
                     sensors=["A B C"],
-                    sensor_sns=["113 114 115"],
+                    sensor_sns=["104 105 106"],#["113 114 115"],
                     probe_height_m=[0.857],
                     header_content=[example_header_content],
-                    show_raw_strains=False,
+                    show_raw_strains=True,
                     imu_mode=False)
     # run_collection( nano_id=[1, 2],
     #                 sensors=["A C E", "A C E"],

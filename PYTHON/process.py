@@ -22,7 +22,7 @@ from matplotlib.colors import ListedColormap
 import pandas as pd
 from scipy.signal import savgol_filter, butter, filtfilt, medfilt
 from scipy.ndimage import gaussian_filter1d
-from statsmodels.nonparametric.smoothers_lowess import lowess
+# from statsmodels.nonparametric.smoothers_lowess import lowess
 from scipy.interpolate import PchipInterpolator
 # from hampel import hampel
 
@@ -103,7 +103,7 @@ class HiSTIFFSData:
             ADC_info = next((row for row in self.header_rows if row and "Analog" in row[0]), None)
             data_rate_str = next((s.split()[-1] for s in ADC_info if 'Rate' in s), None)
             self.data_rate = int(data_rate_str.replace('DR_', '').replace('SPS', ''))
-            self.filter_window = int(round(self.data_rate/20.0 + 0.01, 0))
+            self.filter_window = int(round(self.data_rate/40.0 + 0.01, 0))
             if debug: print(f'\nADC info: {ADC_info}'); print(f'data rate: {data_rate_str}, {self.data_rate}Hz')
 
             self.data_dict = {}
@@ -1646,11 +1646,10 @@ def run_stiffness_pipeline(data: HiSTIFFSData, results_note: str='None') -> None
     data.save_stiffnesses(note=results_note)
 
 if __name__ == "__main__":
-    times = ['150300', '150312', '150636', '150807', '151203', '151326', '152754']
-    data = HiSTIFFSData(date="2026-08-14", time=times[7 - 1], debug=True)
+    times = ['104225', '145316', '152013', '153256']
+    data = HiSTIFFSData(date="2026-08-26", time=times[3 - 1], debug=True)
     if data.exists:
-        # data.plot_raw_strains(combined=False)
-        # data.plot_raw_strains(combined=False)
+        data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
         # data.calc_force_position(clip=False)

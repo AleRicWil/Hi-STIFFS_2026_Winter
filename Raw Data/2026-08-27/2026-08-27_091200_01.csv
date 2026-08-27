@@ -1,7 +1,7 @@
 ===BEGIN_METADATA===
 Test Name: 2026-08-27_091200_01,yyyy-mm-dd_hhmmss_{probe#/nano_id}
 Probe ID: Nano_01,Probe Height (m): 0.8570
-Note: Chesterfiled repeatability runs
+Note: 
 Test Type: Calibration
 Loads (N): 4.905 9.81 49.05,Positions (mm): 60 100 150
 Analog-to-Digital Converter: ADS1220,Mode: Turbo,Data Rate: DR_600SPS,Analog Excitation/Reference Voltage: 5.1V +/-2mV
