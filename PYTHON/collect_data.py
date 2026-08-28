@@ -1389,23 +1389,23 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: Hotel testing",
+        "Note: Hotel testing, Left and right have own Nanos (Right_ID:01, Leftt_ID:02), Accel on Right",
         "Test Type: Shakedown",
         "Stalks: None, Probe: v4.1, Speed: None",
         # "Loads (N): 4.905 9.81 49.05, Positions (mm): 60 100 150",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_600SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
-    run_collection( nano_id=[2],
-                    sensors=["A B C"],
-                    sensor_sns=["104 105 106"],#["113 114 115"],
-                    probe_height_m=[0.857],
-                    header_content=[example_header_content],
-                    show_raw_strains=True,
-                    imu_mode=False)
-    # run_collection( nano_id=[1, 2],
-    #                 sensors=["A C E", "A C E"],
-    #                 sensor_sns=["001 003 005", "002 004 011"],
-    #                 probe_height_m=[0.790, 0.790],
-    #                 header_content=[example_header_content, example_header_content],
-    #                 imu_mode=True)
+    # run_collection( nano_id=[2],
+    #                 sensors=["A B C"],
+    #                 sensor_sns=["104 105 106"],#["113 114 115"],
+    #                 probe_height_m=[0.857],
+    #                 header_content=[example_header_content],
+    #                 show_raw_strains=True,
+    #                 imu_mode=False)
+    run_collection( nano_id=[1, 2],
+                    sensors=["A B C", "A B C"],
+                    sensor_sns=["113 114 115", "104 105 106"],
+                    probe_height_m=[0.100, 0.100],
+                    header_content=[example_header_content, example_header_content],
+                    imu_mode=True)
