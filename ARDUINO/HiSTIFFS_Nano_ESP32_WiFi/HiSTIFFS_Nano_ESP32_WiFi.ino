@@ -134,12 +134,12 @@
 #define SPI_MISO_IMU A6
 #define SPI_MOSI_IMU A7
 
-#define A_CS_PIN   10
-#define A_DRDY_PIN 9
-#define B_CS_PIN   8
-#define B_DRDY_PIN 7
-#define C_CS_PIN   6
-#define C_DRDY_PIN 5
+#define A_CS_PIN   10    //
+#define A_DRDY_PIN 9    //
+#define B_CS_PIN   8   //
+#define B_DRDY_PIN 7    //
+#define C_CS_PIN   6   //
+#define C_DRDY_PIN 5    //
 
 #define D_CS_PIN   4
 #define D_DRDY_PIN 3
@@ -178,8 +178,8 @@ void writeRegister(int csPin, uint8_t regAddr, uint8_t value);
 // ========== SPI SETTINGS ==========
 // Max 8 MHz for IMU/MAG
 // Max 6 MHz for ICB (ADS1220)
-const SPISettings sensorSPI_ICB(1000000, MSBFIRST, SPI_MODE1);
-const SPISettings sensorSPI_IMU_MAG(1000000, MSBFIRST, SPI_MODE3);
+const SPISettings sensorSPI_ICB(2000000, MSBFIRST, SPI_MODE1);
+const SPISettings sensorSPI_IMU_MAG(2000000, MSBFIRST, SPI_MODE3);
 
 extern SPIClass SPI;
 SPIClass spiIMU(HSPI);
@@ -202,6 +202,27 @@ const uint8_t  TARGET_MAG_FS_GAUSS = 12;    // Options: 4, 8, 12, 16
 const uint32_t LED_FLASH_PERIOD_US = 3000000UL;  // 3 seconds
 const uint32_t LED_ON_DURATION_US  = 100000UL;    // 100 ms visible flash
 
+// --- ICB health / auto-reconfig ---
+const uint32_t ICB_STALL_US          = 50000UL;   // no completed pair for 50 ms → recover
+const uint32_t ICB_RECOVER_COOLDOWN_US = 300000UL; // ignore stall detector after a recover
+const uint32_t ICB_PERIODIC_RECONFIG_US = 5000000UL; // optional belt-and-suspenders
+
+volatile uint32_t g_last_icb_pair_us = 0;
+volatile bool     g_icb_recover_req  = false;
+uint32_t          g_last_icb_recover_us = 0;
+uint32_t          g_last_icb_periodic_us = 0;
+
+// Known-good CONFIG bytes (datasheet reset=0x00; these match your library setup)
+// CONFIG0: mux AIN0-AIN1 | gain=128 | PGA enabled
+const uint8_t ICB_CFG0_AIN01_G128 = 0x0E;
+// CONFIG0: mux AIN2-AIN3 | gain=128 | PGA enabled
+const uint8_t ICB_CFG0_AIN23_G128 = 0x5E;
+// CONFIG1: DR=101 (600/1200) | MODE=10 (turbo) | CM=1 (continuous)
+const uint8_t ICB_CFG1_TURBO_1200_CONT = 0xB4;
+// CONFIG2: VREF = REFP0/REFN0 (external analog). Adjust if your board differs.
+const uint8_t ICB_CFG2_VREF_EXT        = 0x40;
+const uint8_t ICB_CFG3_DEFAULT         = 0x00;
+
 volatile bool g_led_on = false;
 uint32_t last_led_toggle_us = 0;
 
@@ -210,7 +231,7 @@ const char* ssid = "Hi-STIFFS_Host";                  // Hard-coded SSID of the 
 const char* password = "BYUCropBio";                  // Pre-shared WPA2 key for the dedicated Hi-STIFFS_Host network.
 const char* host_ip = "192.168.137.1";                // Static IPv4 of the Python host running the single shared WiFiDataServer; every Nano targets this endpoint so the server can demux incoming frames by the leading nano_id byte
 const int host_port = 8080;                           // TCP listening port of WiFiDataServer; chosen above the privileged range for cross-platform (Win/Linux/RPi5) compatibility while keeping connection setup fast
-const uint8_t NANO_ID = 2;                           // ASCII string form of this probe’s unique 2-digit identifier; atoi()’d at packet-build time and placed as the very first payload byte so the host routes data to the correct DataReceiverWriter instance
+const uint8_t NANO_ID = 1;                           // ASCII string form of this probe’s unique 2-digit identifier; atoi()’d at packet-build time and placed as the very first payload byte so the host routes data to the correct DataReceiverWriter instance
 const unsigned long BATCH_SEND_INTERVAL_MS = 50;      // Period of batch_timer esp_timer; NetworkTask wakes every 50 ms to snapshot and transmit the circular buffer
 const unsigned long WiFi_CHECK_INTERVAL_MS = 2000;    // Health-check cadence inside NetworkTask’s CONNECTED state; 5 s is infrequent enough to avoid stealing cycles from the high-priority SamplingTask yet fast enough to detect and recover from transient field WiFi drops before pose data gaps appear
 const unsigned long WiFi_RETRY_DELAY_MS = 5000;       // Minimum back-off between connectToHost() attempts; prevents CPU spin during AP association or TCP failures and protects the deterministic IMU sampling path on core 1
@@ -336,6 +357,8 @@ void connectToHost() {
             enableADCInterrupts();
             ready_mask = 0;
             q_ICB_head = q_ICB_tail = q_ICB_count = 0;
+            g_last_icb_pair_us = 0;
+            g_icb_recover_req  = false;
           }
           q_IMU_head = q_IMU_tail = q_IMU_count = 0;
           time_init = esp_timer_get_time();
@@ -410,10 +433,10 @@ void IRAM_ATTR readADS1220(int idx, int cs_pin, uint8_t* buffer) {
   // Change multiplexer channels
   SPI.transfer(ICB_WREG | (CONFIG_REG0_ADDRESS << 2));                 // WREG command to address 0 (CONFIG_REG0)
   if (current_channels[idx] == 0) {
-    SPI.transfer((config0_shadow[0] & ~REG_CONFIG0_MUX_MASK) | MUX_AIN2_AIN3);
+    SPI.transfer((config0_shadow[idx] & ~REG_CONFIG0_MUX_MASK) | MUX_AIN2_AIN3);
   } 
   else {
-    SPI.transfer((config0_shadow[0] & ~REG_CONFIG0_MUX_MASK) | MUX_AIN0_AIN1);
+    SPI.transfer((config0_shadow[idx] & ~REG_CONFIG0_MUX_MASK) | MUX_AIN0_AIN1);
   }
 
   // Close SPI
@@ -503,6 +526,76 @@ void IRAM_ATTR handleDrdyF() {
 
   readADS1220(i, F_CS_PIN, SPI_Buf);    // Get data off the chip and switch multiplexer channel in one SPI transaction
   storeData(i, timestamp_us, SPI_Buf);  // Store data to memory for later queuing
+}
+
+void writeRegister_ICB(int csPin, uint8_t regAddr, uint8_t value) {
+  SPI.beginTransaction(sensorSPI_ICB);
+  digitalWrite(csPin, LOW);
+  delayMicroseconds(2);
+  SPI.transfer(ICB_WREG | (regAddr << 2));  // WREG, 1 register
+  SPI.transfer(value);
+  digitalWrite(csPin, HIGH);
+  delayMicroseconds(2);
+  SPI.endTransaction();
+}
+
+uint8_t readRegister_ICB(int csPin, uint8_t regAddr) {
+  SPI.beginTransaction(sensorSPI_ICB);
+  digitalWrite(csPin, LOW);
+  delayMicroseconds(2);
+  SPI.transfer(ICB_RREG | (regAddr << 2));
+  uint8_t v = SPI.transfer(SPI_MASTER_DUMMY);
+  digitalWrite(csPin, HIGH);
+  delayMicroseconds(2);
+  SPI.endTransaction();
+  return v;
+}
+
+// Lightweight recover: no RESET, no library begin(), no long delays.
+// Restores turbo/gain/mux/VREF and restarts continuous conversions.
+void recoverICB_sensors(const char* reason) {
+  if (!g_use_icb_sensors) return;
+
+  disableADCInterrupts();
+
+  if (hasSerial) {
+    Serial.print("[ICB recover] ");
+    Serial.println(reason);
+  }
+
+  for (int i = 0; i < NUM_SENSORS; i++) {
+    const int cs = all_configs[i].cs_pin;
+    writeRegister_ICB(cs, CONFIG_REG0_ADDRESS, ICB_CFG0_AIN01_G128);
+    writeRegister_ICB(cs, 0x01, ICB_CFG1_TURBO_1200_CONT);
+    writeRegister_ICB(cs, 0x02, ICB_CFG2_VREF_EXT);
+    writeRegister_ICB(cs, 0x03, ICB_CFG3_DEFAULT);
+
+    current_channels[i] = 0;
+    config0_shadow[i]   = ICB_CFG0_AIN01_G128;
+    memset(&ICBs_Data[(size_t)i * ICB_DATA_SIZE], 0, ICB_DATA_SIZE);
+
+    if (hasSerial) {
+      uint8_t c0 = readRegister_ICB(cs, 0x00);
+      uint8_t c1 = readRegister_ICB(cs, 0x01);
+      Serial.printf("  %c CS=%d  CFG0=0x%02X CFG1=0x%02X\n",
+                    all_configs[i].id, cs, c0, c1);
+    }
+  }
+
+  ready_mask = 0;
+  if (xSemaphoreTake(bufferMutex_ICB, pdMS_TO_TICKS(5)) == pdTRUE) {
+    q_ICB_head = q_ICB_tail = q_ICB_count = 0;
+    xSemaphoreGive(bufferMutex_ICB);
+  }
+
+  // Restart all converters together; skip the long first-time stagger.
+  broadcast_command(0x08);  // START/SYNC
+  delayMicroseconds(50);
+
+  enableADCInterrupts();
+  g_last_icb_pair_us     = (uint32_t)(esp_timer_get_time() - time_init);
+  g_last_icb_recover_us  = g_last_icb_pair_us;
+  g_icb_recover_req      = false;
 }
 
 // Broadcast a command to all active sensors
@@ -1251,8 +1344,18 @@ void SamplingTask(void *pvParameters) {
               }
 
               // === ICB sensors sample
-              if (checkICB_AllDataReady() && g_use_icb_sensors) {
-                queueDataPacket_ICB();
+              if (g_use_icb_sensors) {
+                if (checkICB_AllDataReady()) {
+                  queueDataPacket_ICB();
+                  g_last_icb_pair_us = timestamp_us;
+                } 
+                else if (g_last_icb_pair_us != 0) {
+                  const uint32_t dt = timestamp_us - g_last_icb_pair_us;
+                  const uint32_t since_rec = timestamp_us - g_last_icb_recover_us;
+                  if (dt > ICB_STALL_US && since_rec > ICB_RECOVER_COOLDOWN_US) {
+                    g_icb_recover_req = true;   // NetworkTask does the SPI
+                  }
+                }
               }
 
               // === LED flash logic (runs at IMU rate, extremely cheap) ===
@@ -1288,6 +1391,9 @@ void NetworkTask(void *pvParameters) {
             }
 
             case CONNECTED: {
+              if (g_icb_recover_req) {
+                    recoverICB_sensors("stall detector");
+                }
                 // Wait for batch trigger or timeout for monitoring
                 if (xSemaphoreTake(batchSemaphore, pdMS_TO_TICKS(200)) == pdTRUE) {
                     sendQueuedDataTCP();

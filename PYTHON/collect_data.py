@@ -48,7 +48,7 @@ VREF = 5.1
 VOLTS_PER_LSB = VREF / (ADS1220_PGA_GAIN * TWO_TO_23)
 
 # === Plotting parameters ===
-PLOT_REFRESH_HZ = 16
+PLOT_REFRESH_HZ = 5
 SCREEN_SCALE = 1.3
 SCREEN_WIDTH = int(1920 * SCREEN_SCALE)
 SCREEN_HEIGHT = int(1080 * SCREEN_SCALE)
@@ -1001,11 +1001,9 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
     # =============================================================================
 
     # Match the constants used in the original serial monitor for consistency
-    IMU_RATE_HZ = 3000         # conservative upper bound for maxlen calc
-    MAG_RATE_HZ = 1000
-    PLOT_WINDOW_S = 3.0         # longer horizon than ICB for IMU validation
-    DISPLAY_HZ = 1500            # max samples/sec kept in plot buffers
-    ACCEL_DISPLAY_HZ = 60      # accel is noisier; draw it even thinner
+    IMU_RATE_HZ = 3000          # packet-rate estimate for status / stride
+    PLOT_WINDOW_S = 3.0         # visible history
+    DISPLAY_HZ = 300            # samples/sec kept for all 9 plot traces
 
     def __init__(self, data_receiver_writer, plot_window_s: float = PLOT_WINDOW_S):
         super().__init__()
@@ -1113,7 +1111,7 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
             pg.setConfigOptions(useOpenGL=False)
             print("[IMUPlotWindow] Raspberry Pi 5 detected — using reduced refresh + no OpenGL")
         else:
-            self.plot_refresh_hz = 15.0
+            self.plot_refresh_hz = PLOT_REFRESH_HZ
             pg.setConfigOptions(useOpenGL=True, antialias=False)
 
         self.plot_timer = QtCore.QTimer()
@@ -1175,9 +1173,22 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
                 self.start_ts_us = time_s * 1_000_000   # store as us for consistency
                 self._first_wall_time = time.perf_counter()
 
-            t_rel = time_s - (self.start_ts_us / 1_000_000.0)
+            if self._last_t is not None:
+                dt = time_s - self._last_t
+                if dt > 1e-6:
+                    inst_hz = 1.0 / dt
+                    prev = getattr(self, '_inst_hz', inst_hz)
+                    self._inst_hz = 0.9 * prev + 0.1 * inst_hz
+                    self._display_stride = max(1, int(round(self._inst_hz / self.DISPLAY_HZ)))
+            self._last_t = time_s
 
-            # Append to ring buffers (O(1))
+            self._plot_keep_n += 1
+            if (self._plot_keep_n % self._display_stride) != 0:
+                self.pkt_count += 1
+                if self.pkt_count % int(self.IMU_RATE_HZ / 2) == 0:
+                    self._update_status()
+                continue
+
             self.t_buf.append(time_s)
             self.gx_buf.append(gx)
             self.gy_buf.append(gy)
@@ -1189,7 +1200,7 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
             self.my_buf.append(my)
             self.mz_buf.append(mz)
 
-            self.pkt_count += 1
+            # self.pkt_count += 1
 
             # Occasional status update (not every packet — cheap)
             if self.pkt_count % int(self.IMU_RATE_HZ/2) == 0:
@@ -1247,16 +1258,11 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
         plot_widget.setYRange(y_min - padding, y_max + padding)
 
     def _update_status(self, extra: str = ""):
-        if len(self.t_buf) < 2:
-            rate = 0.0
+        if hasattr(self, '_first_wall_time') and self.pkt_count > 1:
+            elapsed = time.perf_counter() - self._first_wall_time
+            rate = (self.pkt_count - 1) / max(elapsed, 1e-6)
         else:
-            # Sliding-window rate over the last self.rate_window_s seconds
-            # (or however much data we have accumulated so far).
-            # Using deque end-point access is O(1) and very cheap.
-            t_first = self.t_buf[0]
-            t_last = self.t_buf[-1]
-            t_span = t_last - t_first
-            rate = (len(self.t_buf) - 1) / max(t_span, 1e-6)
+            rate = 0.0
 
         msg = (f"IMU Packets: {self.pkt_count:6d} | "
                f"Rate: {rate:.1f} Hz | "
@@ -1277,7 +1283,7 @@ class IMUPlotWindow(QtWidgets.QMainWindow):
         event.accept()
 
 
-def run_collection(nano_id=[1], sensors=['A B C'], sensor_sns=['001 002 003'], imu_mode=False,
+def run_collection(nano_id=[1], sensors=['A B C'], sensor_sns=['001 002 003'], imu_mode_list=[None],
                    probe_height_m=[None], header_content=[None], plot=True, show_raw_strains=False):
     """
     Start data collection for one or more Hi-STIFFS probes.
@@ -1349,13 +1355,13 @@ def run_collection(nano_id=[1], sensors=['A B C'], sensor_sns=['001 002 003'], i
             nano_id=nid,
             probe_height_m=probe_height_m[i],
             show_raw_strains=show_raw_list[i],
-            imu_mode=imu_mode
+            imu_mode=imu_mode_list[i]
         )
         handlers.append(dw)
 
         if plot:
             win = RealTimePlotWindow(dw, num_sensors, sensor_labels,
-                                     show_raw_strains=show_raw_list[i], imu_mode=imu_mode)
+                                     show_raw_strains=show_raw_list[i], imu_mode=imu_mode_list[i])
             windows.append(win)
 
         dw.start()
@@ -1389,7 +1395,7 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: Hotel testing, Left and right have own Nanos (Right_ID:01, Leftt_ID:02), Accel on Right",
+        "Note: Hotel testing, Left and right have own Nanos (Right_ID:01, Left_ID:02), Accel on Right",
         "Test Type: Shakedown",
         "Stalks: None, Probe: v4.1, Speed: None",
         # "Loads (N): 4.905 9.81 49.05, Positions (mm): 60 100 150",
@@ -1402,10 +1408,10 @@ if __name__ == "__main__":
     #                 probe_height_m=[0.857],
     #                 header_content=[example_header_content],
     #                 show_raw_strains=True,
-    #                 imu_mode=False)
+    #                 imu_mode_list=[False])
     run_collection( nano_id=[1, 2],
                     sensors=["A B C", "A B C"],
                     sensor_sns=["113 114 115", "104 105 106"],
                     probe_height_m=[0.100, 0.100],
                     header_content=[example_header_content, example_header_content],
-                    imu_mode=True)
+                    imu_mode_list=[True,False])
