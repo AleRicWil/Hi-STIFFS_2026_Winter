@@ -824,7 +824,7 @@ class RealTimePlotWindow(QtWidgets.QMainWindow):
                 try:
                     num = (self.k2[i] * self.d2[i] * (strain1 - self.c1[i]) - self.k1[i] * self.d1[i] * (strain2 - self.c2[i]))
                     den = (self.k2[i] * (strain1 - self.c1[i]) - self.k1[i] * (strain2 - self.c2[i]))
-                    position = num / den if den != 0 and abs(den) > 1e9 else 0.0
+                    position = num / den if den != 0 and abs(den) > 1e10 else 0.0
                     position = position if 0.055 <= position <= 0.20 else 0.0
                 except:
                     position = 0.0
@@ -1395,9 +1395,9 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: Hotel testing, Left and right have own Nanos (Right_ID:01, Left_ID:02), Accel on Right",
-        "Test Type: Shakedown",
-        "Stalks: None, Probe: v4.1, Speed: None",
+        "Note: Left and right have own Nanos (Right_ID:01, Left_ID:02), Accel on Right",
+        "Test Type: Chesterfield Repeatability ; DARLING",
+        "Stalks: Airport Greenish (Left Side), Probe: v4.1, Speed: 1.0mph",
         # "Loads (N): 4.905 9.81 49.05, Positions (mm): 60 100 150",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_600SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
@@ -1412,6 +1412,6 @@ if __name__ == "__main__":
     run_collection( nano_id=[1, 2],
                     sensors=["A B C", "A B C"],
                     sensor_sns=["113 114 115", "104 105 106"],
-                    probe_height_m=[0.100, 0.100],
+                    probe_height_m=[0.902, 0.941],
                     header_content=[example_header_content, example_header_content],
                     imu_mode_list=[True,False])
