@@ -1106,7 +1106,7 @@ def _review_stalks(parent_data, refine):
             linewidths=0, rasterized=True, zorder=2,
         )
         sel = fp_ax.scatter(
-            [], [], s=5, c='k', marker='o',
+            [], [], s=5, c='red', marker='o',
             linewidths=0, zorder=4,
         )
         ring = fp_ax.scatter(

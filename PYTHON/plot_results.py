@@ -162,6 +162,7 @@ def plot_stiffnesses(csv_paths, show=True, save_dir=None):
     colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
     figs = []
+    max_stiff = 0.0
     for col_name, title in zip(ESTIMATE_COLS, ESTIMATE_TITLES):
         fig, ax = plt.subplots(figsize=(max(8.0, 0.35 * len(tick_x) + 2.0), 5.5))
         for i, (label, recs) in enumerate(by_source):
@@ -173,6 +174,7 @@ def plot_stiffnesses(csv_paths, show=True, save_dir=None):
                     continue
                 xs.append(x_of[(rec['Plot'], rec['Stalk'])])
                 ys.append(y)
+                if y > max_stiff: max_stiff = y
             ax.scatter(
                 xs, ys,
                 s=46,
@@ -187,6 +189,7 @@ def plot_stiffnesses(csv_paths, show=True, save_dir=None):
         ax.set_ylabel('EI (N·m²)')
         ax.set_xticks(tick_x)
         ax.set_xticklabels(tick_label, rotation=75, ha='right', fontsize=8)
+        ax.set_ylim(0,max_stiff*1.1)
         ax.grid(True, axis='y', alpha=0.3)
         if len(by_source) > 1:
             ax.legend(loc='best', fontsize=8)
@@ -233,7 +236,8 @@ if __name__ == '__main__':
     # Each file is one scatter series; matching (Plot, Stalk) share an x.
     RESULT_CSVS = [
         r'Hi-STIFFS_2026_Winter\Results\2026-08-28\104213_stiffnesses.csv',
-        r'Hi-STIFFS_2026_Winter\Results\2026-08-28\110545_stiffnesses.csv'
+        r'Hi-STIFFS_2026_Winter\Results\2026-08-28\110545_stiffnesses.csv',
+        r'Hi-STIFFS_2026_Winter\Results\2026-08-28\112006_stiffnesses.csv'
     ]
 
     args = _parse_args()

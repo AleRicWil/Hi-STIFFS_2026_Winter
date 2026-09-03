@@ -44,33 +44,55 @@ def process_test(file_path: str, plot_flag: bool=True) -> tuple[str, float, floa
         float: calculated flexural stiffness.
         float: linear fit residual error
     """
-    # row indices of various metadata 
-    test_row_idx = 11
-    height_row_idx = 12
-    stalk_row_idx = 17
+    # Parse header metadata by field title rather than row index
+    meta = {}
+    pre_test_notes = []
 
-    # get key test info from header metadata
+    # Last two '_' -separated pieces of the filename. Plot and test_num in plot.
+    parts = Path(file_path).stem.split('_')
+    if len(parts) < 2:
+        raise ValueError(f'Expected at least two "_" tokens in filename: {file_path}')
+    plot_str, test_num_str = parts[-2], parts[-1]
+
     with open(file_path, mode='r', newline='', encoding='utf-8') as file:
         reader = csv.reader(file)
-        
-        # Read until we reach the desired row
-        for current_index, row in enumerate(reader):
-            if current_index == test_row_idx:
-                test_row = row
-            
-            if current_index == height_row_idx:
-                height_row = row
-
-            if current_index == stalk_row_idx:
-                stalk_row = row
+        for row in reader:
+            if not row:
+                continue
+            key = row[0].strip()
+            # Stop once the timeseries block begins
+            if key.startswith('----------TEST DATA') or key.startswith('TIME (milliseconds)'):
                 break
-        
-    test_num = int(test_row[1])
-    height = float(height_row[1]) * 1e-2
-    stalk_ID = stalk_row[1]
+            value = row[1].strip() if len(row) > 1 else ''
+            meta[key] = value
+            if key.startswith('PRE_TEST_NOTE') and value:
+                pre_test_notes.append(value)
 
-    # load data
-    df = pd.read_csv(file_path, skiprows=36)
+    operator_name = meta.get('DEVICE OPERATOR', '')
+    time_str = meta.get('TIME', '')          # e.g. '11:21:13'
+    plot_num = int(meta['PLOT'])              # plot number
+    height = float(meta['HEIGHT']) * 1e-2     # cm -> m
+
+    # Stalk ID lives in a PRE_TEST_NOTE field as 's##'
+    stalk_ID = next(
+        (note for note in pre_test_notes
+         if len(note) >= 2 and note[0] in 'sS' and note[1:].isdigit()),
+        ''
+    )
+    if not stalk_ID:
+        raise ValueError(f'No stalk ID (s##) found in PRE_TEST_NOTE fields: {file_path}')
+
+    # load data — find TEST DATA section instead of hard-coding skiprows
+    test_data_idx = None
+    with open(file_path, mode='r', newline='', encoding='utf-8') as file:
+        for i, row in enumerate(csv.reader(file)):
+            if row and 'TEST DATA' in row[0]:
+                test_data_idx = i
+                break
+    if test_data_idx is None:
+        raise ValueError(f'TEST DATA section not found: {file_path}')
+
+    df = pd.read_csv(file_path, skiprows=test_data_idx + 1)
     time = df['TIME (milliseconds)'].to_numpy() * 1e-3
     angle_pot = df['ANGLE_POT'].to_numpy()
     angle_imu = df['ANGLE_IMU'].to_numpy()
@@ -78,7 +100,7 @@ def process_test(file_path: str, plot_flag: bool=True) -> tuple[str, float, floa
     load_y = df['LOAD_Y'].to_numpy()
 
     # compute stalk deflection at load cell contact point
-    displacement = height * np.sin(np.radians(angle_pot - 90))
+    displacement = height * np.sin(-np.radians(angle_pot - 45))
 
     # linear fit to force (L) vs displacement (x) trace
     dLdx, inter = np.polyfit(displacement, load_x, deg=1)
@@ -92,21 +114,38 @@ def process_test(file_path: str, plot_flag: bool=True) -> tuple[str, float, floa
     # Optional display results
     if plot_flag:
         plt.figure()
-        plt.plot(displacement, load_x)
-        plt.scatter(displacement, load_x, s=1)
-        plt.plot(displacement, fitted_line, c='red')
-        plt.title(rf'Test# - {test_num}, Stiffness - {stiffness:.2f} $N/m^2$'+f'\nStalk ID - {stalk_ID}, Height - {height} (m)')
+        plt.plot(displacement, load_x, color='0.7', lw=0.8, zorder=1)
+        sc = plt.scatter(displacement, load_x, c=time, s=12, cmap='viridis', zorder=2)
+        plt.colorbar(sc, label='Time (s)')
+        plt.plot(displacement, fitted_line, c='red', zorder=3)
+        plt.title(rf'Test# - {test_num_str}, Plot ID - {plot_num}, Stalk ID - {stalk_ID}'+f'\nStiffness - {stiffness:.2f} $N/m^2$')
         plt.xlabel('Lateral Displacement (m)')
         plt.ylabel('Load (N)')
-        plt.xlim(-0.04, 0.16)
-        plt.ylim(-2, 20)
+        # adaptive plot limits
+        x_lo, x_hi = -0.04, 0.16
+        y_lo, y_hi = -2.0, 20.0
+
+        x_min, x_max = np.min(displacement), np.max(displacement)
+        y_min, y_max = np.min(load_x), np.max(load_x)
+
+        if x_min < x_lo:
+            x_lo = x_min - 0.05 * abs(x_min)
+        if x_max > x_hi:
+            x_hi = x_max + 0.05 * abs(x_max)
+        if y_min < y_lo:
+            y_lo = y_min - 0.05 * abs(y_min)
+        if y_max > y_hi:
+            y_hi = y_max + 0.05 * abs(y_max)
+
+        plt.xlim(x_lo, x_hi)
+        plt.ylim(y_lo, y_hi)
 
     return stalk_ID, stiffness, residual_error
 
 
 if __name__ == "__main__":
     # Main execution
-    folder = r"Hi-STIFFS_2026_Winter\Raw Data\2026-07-13\DARLING\MED_07_13"
+    folder = r"Hi-STIFFS_2026_Winter\Raw Data\DARLING Raw Data\aug28_2026_Chesterfield_DARLING02"
     csv_list = get_csv_files(folder)
     print(f"Found {len(csv_list)} CSV files.")
 
@@ -118,7 +157,7 @@ if __name__ == "__main__":
         stalk_data[stalk_ID].append((stiffness, residual_error))
         plt.show()  # Displays plot for each test (as in original script)
 
-    # Select the 6 best stiffness values (lowest residual error) per stalk
+    # Gather stiffness estimates
     stiffnesses = {}
     for stalk_ID, tests in stalk_data.items():
         if not tests:

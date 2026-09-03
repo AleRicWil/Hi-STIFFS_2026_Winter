@@ -361,7 +361,7 @@ class HiSTIFFSData:
             self.data_dict[f'Sensor_{l}']['strain_1_filter'] = savgol_filter(s['strain_1_raw'], window, order)
             self.data_dict[f'Sensor_{l}']['strain_2_filter'] = savgol_filter(s['strain_2_raw'], window, order)
 
-    def calc_force_position(self, filter_out=False, clip=True):
+    def calc_force_position(self, filter_out=False, clip=False):
         print('Calculating force and position from raw data...')
         for l in self.sensor_labels:
             try:
@@ -909,7 +909,7 @@ class HiSTIFFSData:
                 events_only_mask1,
                 events_removed_t1,
                 events_removed_y1,
-            ) = _remove_event_windows(t, smooth1, SAMPLE_RATE, STALK_CONTACT_PERIOD, thresh_fact=thresh_fact)
+            ) = remove_event_windows(t, smooth1, SAMPLE_RATE, STALK_CONTACT_PERIOD, thresh_fact=thresh_fact)
 
             (
                 dsmooth2,
@@ -919,7 +919,7 @@ class HiSTIFFSData:
                 events_only_mask2,
                 events_removed_t2,
                 events_removed_y2,
-            ) = _remove_event_windows(t, smooth2, SAMPLE_RATE, STALK_CONTACT_PERIOD, thresh_fact=thresh_fact)
+            ) = remove_event_windows(t, smooth2, SAMPLE_RATE, STALK_CONTACT_PERIOD, thresh_fact=thresh_fact)
 
             print(f'{len(event_beginnings1)} events detected for Sensor {label} channel 1')
             print(f'{len(event_beginnings2)} events detected for Sensor {label} channel 2')
@@ -1160,7 +1160,9 @@ class HiSTIFFSData:
 
         return smooth1_adjusted, smooth2_adjusted
 
-def _remove_event_windows(t, signal, sample_rate, contact_period, thresh_fact=2):
+
+
+def remove_event_windows(t, signal, sample_rate, contact_period, thresh_fact=2):
     """Detect event windows and return the baseline-only signal."""
 
     # Calculate derivative and event threshold
@@ -1249,10 +1251,10 @@ if __name__ == "__main__":
     starts = t_lims_df['Start Time of Third-to-End Range (s)'].to_numpy()
     ends = t_lims_df['End Time of Run (s)']
     
-    idx = 2
+    idx = 3
     data = HiSTIFFSData(date="2026-08-28", time=times[idx - 0], debug=True, nano_label="01", t_lims=[starts[idx-1], ends[idx-1]])
     if data.exists:
-        # data.plot_raw_strains(combined=False)
+        data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
         # data.moving_baseline(show_plots=show_plots)
@@ -1262,8 +1264,8 @@ if __name__ == "__main__":
 
         # interactive_detect_stalks(data, num_plots=3, stalks_per_plot=10)
         # display_stalk_selections(data)
-        # refine_stalk_selections(data)
-        run_stiffness_pipeline(data, results_note='Chesterfield Repeatability')
+        refine_stalk_selections(data)
+        # run_stiffness_pipeline(data, results_note='Chesterfield Repeatability')
 
         plt.show()
         # keyboard.wait('space')
