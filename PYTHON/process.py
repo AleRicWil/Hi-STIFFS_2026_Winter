@@ -1251,21 +1251,21 @@ if __name__ == "__main__":
     starts = t_lims_df['Start Time of Third-to-End Range (s)'].to_numpy()
     ends = t_lims_df['End Time of Run (s)']
     
-    idx = 3
+    idx = 10
     data = HiSTIFFSData(date="2026-08-28", time=times[idx - 0], debug=True, nano_label="01", t_lims=[starts[idx-1], ends[idx-1]])
     if data.exists:
-        data.plot_raw_strains(combined=False)
+        # data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
         # data.moving_baseline(show_plots=show_plots)
-        data.calc_force_position(clip=False)
+        # data.calc_force_position(clip=False)
         # data.plot_force_position(combined=True, filter_level='valid')
         # plt.show()
 
         # interactive_detect_stalks(data, num_plots=3, stalks_per_plot=10)
         # display_stalk_selections(data)
-        refine_stalk_selections(data)
-        # run_stiffness_pipeline(data, results_note='Chesterfield Repeatability')
+        # refine_stalk_selections(data)
+        run_stiffness_pipeline(data, results_note='Chesterfield Repeatability')
 
         plt.show()
         # keyboard.wait('space')
