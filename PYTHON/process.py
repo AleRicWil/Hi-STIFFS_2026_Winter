@@ -1246,26 +1246,32 @@ if __name__ == "__main__":
     'Scatter Plot: derivative vs magnitude (just events, channels combined)': False,
     }
 
-    times = ['090947','104213','110545','112006','113413','114710','120712','122508','123851','125311','130654']
-    t_lims_df = pd.read_csv(r'Hi-STIFFS_2026_Winter\Raw Data\2026-08-28\last-three-ranges-times.csv')
-    starts = t_lims_df['Start Time of Third-to-End Range (s)'].to_numpy()
-    ends = t_lims_df['End Time of Run (s)']
+    # Chesterfield data
+    # times = ['090947','104213','110545','112006','113413','114710','120712','122508','123851','125311','130654']
+    # t_lims_df = pd.read_csv(r'Hi-STIFFS_2026_Winter\Raw Data\2026-08-28\last-three-ranges-times.csv')
+    # starts = t_lims_df['Start Time of Third-to-End Range (s)'].to_numpy()
+    # ends = t_lims_df['End Time of Run (s)']
+
+    # Provo Shakedown data
+    times = ['094028','094433','094826']
+    starts = None
+    ends = None
     
-    idx = 10
-    data = HiSTIFFSData(date="2026-08-28", time=times[idx - 0], debug=True, nano_label="01", t_lims=[starts[idx-1], ends[idx-1]])
+    idx = 2
+    data = HiSTIFFSData(date="2026-09-08", time=times[idx - 0], debug=True, nano_label="01")#, t_lims=[starts[idx-1], ends[idx-1]])
     if data.exists:
         # data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
         # data.moving_baseline(show_plots=show_plots)
         # data.calc_force_position(clip=False)
-        # data.plot_force_position(combined=True, filter_level='valid')
+        data.plot_force_position(combined=True, filter_level='valid')
         # plt.show()
 
         # interactive_detect_stalks(data, num_plots=3, stalks_per_plot=10)
         # display_stalk_selections(data)
         # refine_stalk_selections(data)
-        run_stiffness_pipeline(data, results_note='Chesterfield Repeatability')
+        # run_stiffness_pipeline(data, results_note='Chesterfield Repeatability')
 
         plt.show()
         # keyboard.wait('space')

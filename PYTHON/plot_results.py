@@ -8,7 +8,8 @@ replicates overlay as a red x (per-stalk mean) with ±3σ error bars.
 
 **Median comparison** — per-stalk median Hi-STIFFS vs median DARLING.
 Optional ±3σ error crosses, 1:1 overlap markers, and a subtitle that
-counts overlap classes and which device has the larger sample SD.
+counts overlap classes, which device has the larger sample SD, and
+Pearson R² of the paired medians.
 
 **Median vs SD** — per-stalk sample SD against median EI for both
 devices. A 10% CV line and each device's pooled sample SD and pooled
@@ -343,6 +344,18 @@ def _n_arms_on_one_to_one(x, y, xerr, yerr):
     return int(delta <= xerr) + int(delta <= yerr)
 
 
+def _r_squared(xs, ys):
+    """Pearson R² of paired *xs* and *ys*. NaN if correlation is undefined."""
+    x = np.asarray(xs, dtype=float)
+    y = np.asarray(ys, dtype=float)
+    finite = np.isfinite(x) & np.isfinite(y)
+    x, y = x[finite], y[finite]
+    if x.size < 2 or np.std(x) == 0.0 or np.std(y) == 0.0:
+        return np.nan
+    r = float(np.corrcoef(x, y)[0, 1])
+    return r * r
+
+
 # ---------------------------------------------------------------------------
 # Figure helpers
 # ---------------------------------------------------------------------------
@@ -548,7 +561,8 @@ def plot_median_comparison(csv_paths, darling_csv, show=True, save_dir=None,
 
     Per-stalk sample SDs are compared too: if they differ by less than
     10% of the larger SD they count as equal, otherwise the larger
-    device is counted. Those counts go on a subtitle row.
+    device is counted. Those counts go on a subtitle row, along with
+    Pearson R² of the paired medians (Hi-STIFFS vs DARLING).
     """
     csv_paths = [Path(p) for p in csv_paths]
     if not csv_paths:
@@ -619,7 +633,7 @@ def plot_median_comparison(csv_paths, darling_csv, show=True, save_dir=None,
                 elinewidth=0.8,
                 capsize=2,
                 capthick=0.8,
-                alpha=0.65,
+                alpha=0.35,
                 zorder=2,
             )
 
@@ -673,16 +687,19 @@ def plot_median_comparison(csv_paths, darling_csv, show=True, save_dir=None,
                 f'one overlap: {n_one}    '
                 f'neither: {n_neither}'
             )
-        sub_lines.append(
-            f'SD equal: {sd_counts["equal"]}    '
-            f'Hi-STIFFS larger: {sd_counts["histiffs"]}    '
-            f'DARLING larger: {sd_counts["darling"]}'
-        )
+        # sub_lines.append(
+        #     f'SD equal: {sd_counts["equal"]}    '
+        #     f'Hi-STIFFS larger: {sd_counts["histiffs"]}    '
+        #     f'DARLING larger: {sd_counts["darling"]}'
+        # )
+        r2 = _r_squared(xs_all, ys_all)
+        r2_s = f'{r2:.4f}' if np.isfinite(r2) else 'n/a'
+        sub_lines.append(f'n={len(xs_all)},  R² = {r2_s}')
         _apply_title_with_sublines(
-            ax, f'{title}  (median vs DARLING median)', sub_lines,
+            ax, f'Hi-STIFFS median vs DARLING median', sub_lines,
         )
-        ax.set_xlabel('DARLING median EI (N·m²)')
-        ax.set_ylabel(f'{title} median EI (N·m²)')
+        ax.set_xlabel('DARLING median EI (N·m²)', fontsize=14)
+        ax.set_ylabel(f'Hi-STIFFS median EI (N·m²)', fontsize=14)
         ax.grid(True, alpha=0.3)
         ax.legend(loc='best', fontsize=8)
         fig.tight_layout()
@@ -806,13 +823,13 @@ def plot_median_vs_sd(csv_paths, darling_csv, show=True, save_dir=None):
                 y_hi = max(y_hi, cv * x_hi)
         ax.set_xlim(0.0, x_hi)
         ax.set_ylim(0.0, y_hi)
-        ax.set_xlabel('Median EI (N·m²)')
-        ax.set_ylabel('Sample SD (N·m²)')
+        ax.set_xlabel('Median EI (N·m²)', fontsize=14)
+        ax.set_ylabel('Sample SD (N·m²)', fontsize=14)
         ax.grid(True, alpha=0.3)
         ax.legend(loc='best', fontsize=8)
         _apply_title_with_sublines(
             ax,
-            f'{title}  (SD vs median)',
+            f'Accuracy vs Stalk Stiffness',
             [
                 _fmt_sd_summary('Hi-STIFFS', hs_pooled, hs_pooled_cv),
                 _fmt_sd_summary('DARLING', darling_pooled, darling_pooled_cv),
