@@ -1395,20 +1395,20 @@ if __name__ == "__main__":
 
     # For standalone: Use example header_content (GUI will override with dynamic list)
     example_header_content = [
-        "Note: manual drive with string",
-        "Test Type: Shakedown 3x",
-        "Stalks: West Corridor 150-200ft, Probe: v4.1, Speed: 0.5mph",
+        "Note: hardware testing",
+        "Test Type: None",
+        "Stalks: None, Probe: v4.1, Speed: None",
         # "Loads (N): 4.905 9.81 49.05, Positions (mm): 60 100 150",
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_600SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
     run_collection( nano_id=[1],
-                    sensors=["A B C"],
-                    sensor_sns=["104 105 106"],#["113 114 115"],
+                    sensors=["A B C D E F"],
+                    sensor_sns=["113 114 115 104 105 106"],#["113 114 115"],
                     probe_height_m=[0.855],
                     header_content=[example_header_content],
                     show_raw_strains=False,
-                    imu_mode_list=[True])
+                    imu_mode_list=[False])
     # run_collection( nano_id=[1, 2],
     #                 sensors=["A B C", "A B C"],
     #                 sensor_sns=["113 114 115", "104 105 106"],

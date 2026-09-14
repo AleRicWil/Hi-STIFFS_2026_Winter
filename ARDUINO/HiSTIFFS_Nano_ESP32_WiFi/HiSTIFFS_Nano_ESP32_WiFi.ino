@@ -127,23 +127,23 @@
 #define SPI_MASTER_DUMMY      0xFF
 
 // ========== PIN DEFINITIONS ==========
-#define SPI_SCK     13                    // GPIO13 on Nano ESP32 wired to SCK of both ISM330DHCX and LIS3MDL; driven at 8 MHz by the SPI library for maximum noise margin on field cables
-#define SPI_MISO    11                    // GPIO11 wired to MISO/SDO of both sensors; receives the 12-byte IMU or 6-byte MAG burst during every sample inside readIMU() / readMAG()
-#define SPI_MOSI    12                    // GPIO12 wired to MOSI/SDI of both sensors; carries the register address byte (with R/W bit) plus any write data during configuration and burst commands
+#define SPI_SCK     D13                    // GPIO13 on Nano ESP32 wired to SCK of both ISM330DHCX and LIS3MDL; driven at 8 MHz by the SPI library for maximum noise margin on field cables
+#define SPI_MISO    D11                    // GPIO11 wired to MISO/SDO of both sensors; receives the 12-byte IMU or 6-byte MAG burst during every sample inside readIMU() / readMAG()
+#define SPI_MOSI    D12                    // GPIO12 wired to MOSI/SDI of both sensors; carries the register address byte (with R/W bit) plus any write data during configuration and burst commands
 #define SPI_SCK_IMU  A0
 #define SPI_MISO_IMU A6
 #define SPI_MOSI_IMU A7
 
-#define A_CS_PIN   10    //
-#define A_DRDY_PIN 9    //
-#define B_CS_PIN   8   //
-#define B_DRDY_PIN 7    //
-#define C_CS_PIN   6   //
-#define C_DRDY_PIN 5    //
+#define A_CS_PIN   D10    //
+#define A_DRDY_PIN D9    //
+#define B_CS_PIN   D8   //
+#define B_DRDY_PIN D7    //
+#define C_CS_PIN   D6   //
+#define C_DRDY_PIN D5    //
 
-#define D_CS_PIN   4
-#define D_DRDY_PIN 3
-#define E_CS_PIN   2
+#define D_CS_PIN   D4
+#define D_DRDY_PIN D3
+#define E_CS_PIN   D2
 #define E_DRDY_PIN A1
 #define F_CS_PIN   A2
 #define F_DRDY_PIN A3
@@ -178,7 +178,7 @@ void writeRegister(int csPin, uint8_t regAddr, uint8_t value);
 // ========== SPI SETTINGS ==========
 // Max 8 MHz for IMU/MAG
 // Max 6 MHz for ICB (ADS1220)
-const SPISettings sensorSPI_ICB(2000000, MSBFIRST, SPI_MODE1);
+const SPISettings sensorSPI_ICB(500000, MSBFIRST, SPI_MODE1);
 const SPISettings sensorSPI_IMU_MAG(2000000, MSBFIRST, SPI_MODE3);
 
 extern SPIClass SPI;
@@ -186,7 +186,7 @@ SPIClass spiIMU(HSPI);
 
 // ========== USER TUNABLE GLOBAL CONSTANTS ==========
 const int MAX_SENSORS = 6;     // Maximum possible sensors (A to E)
-const int NUM_SENSORS = 3;     // Set to 1-5 to use the first N sensors from all_configs below.
+const int NUM_SENSORS = 6;     // Set to 1-5 to use the first N sensors from all_configs below.
 const uint8_t dr_code = DR_600SPS;  // Data Rate value. In turbo, value is for pairs/sec. In normal, value is for samples/sec
 const uint16_t TARGET_ICB_RATE_HZ = 600;
 

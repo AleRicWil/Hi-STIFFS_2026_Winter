@@ -29,7 +29,9 @@ from scipy.interpolate import PchipInterpolator
 from config import Config
 from stalk_detector import (
     interactive_detect_stalks,
+    interactive_detect_stalks_derivs,
     display_stalk_selections,
+    display_stalk_derivs,
     refine_stalk_selections,
     load_stalk_rows,
     refine_time_window,
@@ -384,7 +386,7 @@ class HiSTIFFSData:
 
                 num = k2*(s['strain_1_filter'] - c1) - k1*(s['strain_2_filter'] - c2)
                 den = k1*k2*(d2 - d1)
-                s['force'] = np.clip(np.where(np.abs(den) > 1e-12, num/den, 0.0), -1000, 1000) # santity check in Newtons
+                s['force'] = np.clip(np.where(np.abs(den) > 1e-12, num/den, 0.0), 0.0, 100) # santity check in Newtons
 
                 num = k2*d2*(s['strain_1_filter'] - c1) - k1*d1*(s['strain_2_filter'] - c2)
                 den = k2*(s['strain_1_filter'] - c1) - k1*(s['strain_2_filter'] - c2)                
@@ -394,7 +396,7 @@ class HiSTIFFSData:
                         den[i] = val
                     else:
                         den[i] = 1.0
-                s['position'] = np.clip(np.where(np.abs(den) > 10**8.5, num/den, 0.0), -0.300, 0.300) # sanity check in meters  
+                s['position'] = np.clip(np.where(np.abs(den) > 10**9.0, num/den, 0.0), 0.0, 0.180) # sanity check in meters  
 
                 if filter_out:
                     s['force'] =    savgol_filter(s['force'],    self.filter_window, 1)
@@ -411,6 +413,45 @@ class HiSTIFFSData:
 
         print('Calculate force and position complete.\n')
         self.has_force_pos = True
+
+    def calc_derivs(self):
+        '''
+        takes each sensor's time, force, postion arrays and outputs various derivatives.
+        used in identifying stalk interactions.
+        '''
+        needs_fp = False
+        for l in self.sensor_labels:
+            s = self.data_dict.get(f'Sensor_{l}', {})
+            if 'force' not in s or 'position' not in s:
+                needs_fp = True
+                break
+        if needs_fp:
+            self.calc_force_position()
+
+        window = self.filter_window / 2
+        polyorder = 2
+        print(f'[calc_derivs()] Calculating derivatives (window={window}, polyorder={polyorder})...')
+
+        for l in self.sensor_labels:
+            key = f'Sensor_{l}'
+            if key not in self.data_dict:
+                continue
+            s = self.data_dict[key]
+            if 'time' not in s or 'force' not in s or 'position' not in s:
+                print(f"[calc_derivs()] Missing data for Sensor {l}. Cannot calculate derivatives.")
+                continue
+
+            t = s['time']
+            force = s['force']
+            pos = s['position']
+            s['dF_dt'] = non_uniform_savgol(t, force, window, polyorder, deriv=1)
+            s['d2F_dt2'] = non_uniform_savgol(t, force, window, polyorder, deriv=2)
+            s['dx_dt'] = non_uniform_savgol(t, pos, window, polyorder, deriv=1)
+            s['d2x_dt2'] = non_uniform_savgol(t, pos, window, polyorder, deriv=2)
+            s['dF_dx'] = non_uniform_savgol(pos, force, window, polyorder, deriv=1)
+            s['d2F_dx2'] = non_uniform_savgol(pos, force, window, polyorder, deriv=2)
+
+        print('[calc_derivs()] Calculate derivatives complete.\n')
 
     # === gather refined stalk bounds ===
     def gather_stalk_traces(self):
@@ -550,7 +591,7 @@ class HiSTIFFSData:
         return float(np.nanmedian(samples))
 
     # === display data and output results ===
-    def plot_force_position(self, sensors='A,B,C,D,E', combined=True, return_figs=False, filter_level='valid', offset_time: bool=False):
+    def plot_force_position(self, sensors='A,B,C,D,E,F', combined=True, return_figs=False, filter_level='valid', offset_time: bool=False):
         sensors_to_plot = [label.strip() for label in sensors.split(',')]
 
         # Filter out invalid sensor labels (always safe on Windows, Ubuntu, and RPi 5)
@@ -686,6 +727,81 @@ class HiSTIFFSData:
 
                 fig.tight_layout()
                 figs.append(fig)
+
+        if return_figs:
+            return figs
+        else:
+            for fig in figs:
+                plt.show(block=False)
+            return None
+
+    def plot_derivs(self, sensors='A,B,C,D,E,F', return_figs=False):
+        """One figure per sensor: force and dF/dt / d2F/dt2 on the left,
+        position and dx/dt / d2x/dt2 on the right. All six axes share time.
+        Force-vs-position derivatives are not plotted.
+        """
+        sensors_to_plot = [label.strip() for label in sensors.split(',')]
+        removed = [label for label in sensors_to_plot if label not in self.sensor_labels]
+        for label in removed:
+            print(f"Sensor {label} not in CSV data")
+        sensors_to_plot = [label for label in sensors_to_plot if label in self.sensor_labels]
+
+        if not sensors_to_plot:
+            print("No valid sensors to plot.")
+            return [] if return_figs else None
+
+        deriv_keys = ('dF_dt', 'd2F_dt2', 'dx_dt', 'd2x_dt2')
+        needs_derivs = False
+        for l in sensors_to_plot:
+            s = self.data_dict.get(f'Sensor_{l}', {})
+            if any(k not in s for k in deriv_keys) or 'force' not in s or 'position' not in s:
+                needs_derivs = True
+                break
+        if needs_derivs:
+            self.calc_derivs()
+
+        sensor_order = 'ABCDEF'
+        ordered_sensors = sorted(sensors_to_plot, key=lambda x: sensor_order.index(x))
+        figs = []
+
+        for i, l in enumerate(ordered_sensors):
+            s = self.data_dict[f'Sensor_{l}']
+            if any(k not in s for k in deriv_keys) or 'time' not in s:
+                print(f"Missing derivative data for Sensor {l}")
+                continue
+
+            t = s['time']
+            c = self.colors[i % len(self.colors)]
+            fig, axs = plt.subplots(3, 2, sharex=True, figsize=(14, 9), squeeze=False)
+            fig.suptitle(f"Force & Position Derivatives - Sensor {l}\n"
+                         f"Test: {self.test_type}", fontsize=12)
+
+            axs[0, 0].scatter(t, s['force'], c=c, s=5)
+            axs[0, 0].set_ylabel('Force (N)')
+
+            axs[1, 0].scatter(t, s['dF_dt'], c=c, s=5)
+            axs[1, 0].set_ylabel('dF/dt (N/s)')
+
+            axs[2, 0].scatter(t, s['d2F_dt2'], c=c, s=5)
+            axs[2, 0].set_ylabel('d²F/dt² (N/s²)')
+            axs[2, 0].set_xlabel('Time (s)')
+
+            axs[0, 1].scatter(t, s['position'] * 1000, c=c, s=5)
+            axs[0, 1].set_ylabel('Position (mm)')
+
+            axs[1, 1].scatter(t, s['dx_dt'] * 1000, c=c, s=5)
+            axs[1, 1].set_ylabel('dx/dt (mm/s)')
+
+            axs[2, 1].scatter(t, s['d2x_dt2'] * 1000, c=c, s=5)
+            axs[2, 1].set_ylabel('d²x/dt² (mm/s²)')
+            axs[2, 1].set_xlabel('Time (s)')
+
+            for ax in axs.flat:
+                ax.grid(True, alpha=0.3)
+
+            fig.tight_layout(rect=[0, 0, 1, 0.96])
+            fig._sensor_label = l
+            figs.append(fig)
 
         if return_figs:
             return figs
@@ -1162,6 +1278,77 @@ class HiSTIFFSData:
 
 
 
+def non_uniform_savgol(x, y, window_length, polyorder, deriv=0):
+    """Savitzky–Golay filter/derivative for irregularly spaced samples.
+
+    At each sample, fit a polynomial of degree `polyorder` to `window_length`
+    neighbors using the actual `x` coordinates, then evaluate the `deriv`-th
+    derivative at that sample. Edge points use the first/last `window_length`
+    samples (SciPy `savgol_filter` `mode='interp'`). Rank-deficient windows
+    (duplicate or constant `x`) return NaN.
+    """
+    x = np.asarray(x, dtype=np.float64).reshape(-1)
+    y = np.asarray(y, dtype=np.float64).reshape(-1)
+    if x.size != y.size:
+        raise ValueError("x and y must have the same length")
+    n = int(x.size)
+
+    window_length = int(window_length)
+    if window_length < 1:
+        raise ValueError("window_length must be a positive integer")
+    if window_length % 2 == 0:
+        window_length += 1
+
+    polyorder = int(polyorder)
+    deriv = int(deriv)
+    if polyorder < 0:
+        raise ValueError("polyorder must be non-negative")
+    if deriv < 0 or deriv > polyorder:
+        raise ValueError("deriv must satisfy 0 <= deriv <= polyorder")
+    if polyorder >= window_length:
+        raise ValueError("polyorder must be less than window_length")
+    if n < window_length:
+        raise ValueError(
+            f"Not enough samples ({n}) for window_length={window_length}"
+        )
+
+    half = window_length // 2
+    ncols = polyorder + 1
+    fact = 1.0
+    for k in range(1, deriv + 1):
+        fact *= k
+
+    out = np.empty(n, dtype=np.float64)
+    for i in range(n):
+        if i < half:
+            start = 0
+            stop = window_length
+        elif i + half >= n:
+            start = n - window_length
+            stop = n
+        else:
+            start = i - half
+            stop = i + half + 1
+
+        u = x[start:stop] - x[i]
+        yi = y[start:stop]
+        scale = np.max(np.abs(u))
+        if scale == 0.0:
+            # All x in the window are identical: only the 0th derivative exists.
+            out[i] = np.mean(yi) if deriv == 0 else np.nan
+            continue
+
+        v = u / scale
+        A = np.vander(v, N=ncols, increasing=True)
+        coeffs, _, rank, _ = np.linalg.lstsq(A, yi, rcond=None)
+        if rank < ncols:
+            out[i] = np.nan
+            continue
+        out[i] = fact * coeffs[deriv] / (scale ** deriv)
+
+    return out
+
+
 def remove_event_windows(t, signal, sample_rate, contact_period, thresh_fact=2):
     """Detect event windows and return the baseline-only signal."""
 
@@ -1247,29 +1434,34 @@ if __name__ == "__main__":
     }
 
     # Chesterfield data
-    # times = ['090947','104213','110545','112006','113413','114710','120712','122508','123851','125311','130654']
-    # t_lims_df = pd.read_csv(r'Hi-STIFFS_2026_Winter\Raw Data\2026-08-28\last-three-ranges-times.csv')
-    # starts = t_lims_df['Start Time of Third-to-End Range (s)'].to_numpy()
-    # ends = t_lims_df['End Time of Run (s)']
+    times = ['090947','104213','110545','112006','113413','114710','120712','122508','123851','125311','130654']
+    t_lims_df = pd.read_csv(r'Hi-STIFFS_2026_Winter\Raw Data\2026-08-28\last-three-ranges-times.csv')
+    starts = t_lims_df['Start Time of Third-to-End Range (s)'].to_numpy()
+    ends = t_lims_df['End Time of Run (s)']
 
     # Provo Shakedown data
-    times = ['094028','094433','094826']
-    starts = None
-    ends = None
+    # times = ['094028','094433','094826']
+    # starts = None
+    # ends = None
     
-    idx = 2
-    data = HiSTIFFSData(date="2026-09-08", time=times[idx - 0], debug=True, nano_label="01")#, t_lims=[starts[idx-1], ends[idx-1]])
+    idx = 1
+    data = HiSTIFFSData(date="2026-08-28", time=times[idx - 0], debug=True, nano_label="01", t_lims=[starts[idx-1], ends[idx-1]])
     if data.exists:
         # data.plot_raw_strains(combined=False)
         # data.describe_channels()
         # data.shift_initials()
         # data.moving_baseline(show_plots=show_plots)
         # data.calc_force_position(clip=False)
-        data.plot_force_position(combined=True, filter_level='valid')
+        # data.calc_derivs()
+        # data.plot_derivs()
+        # display_stalk_derivs(data)
+        # data.plot_force_position(combined=True, filter_level='valid')
         # plt.show()
 
-        # interactive_detect_stalks(data, num_plots=3, stalks_per_plot=10)
+        # interactive_detect_stalks(data, num_plots=3)
+        interactive_detect_stalks_derivs(data, num_plots=3)
         # display_stalk_selections(data)
+        # display_stalk_derivs(data)
         # refine_stalk_selections(data)
         # run_stiffness_pipeline(data, results_note='Chesterfield Repeatability')
 
