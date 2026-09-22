@@ -1459,8 +1459,8 @@ if __name__ == "__main__":
         # plt.show()
 
         # interactive_detect_stalks(data, num_plots=3)
-        interactive_detect_stalks_derivs(data, num_plots=3)
-        # display_stalk_selections(data)
+        # interactive_detect_stalks_derivs(data, num_plots=3)
+        display_stalk_selections(data)
         # display_stalk_derivs(data)
         # refine_stalk_selections(data)
         # run_stiffness_pipeline(data, results_note='Chesterfield Repeatability')

@@ -890,7 +890,7 @@ if __name__ == '__main__':
         r'Hi-STIFFS_2026_Winter\Results\2026-08-28\125311_stiffnesses.csv',
         r'Hi-STIFFS_2026_Winter\Results\2026-08-28\130654_stiffnesses.csv',
     ]
-    DARLING_CSV = r'stiffnesses.csv'
+    DARLING_CSV = r'Hi-STIFFS_2026_Winter\Results\2026-08-28\stiffnesses.csv'
 
     args = _parse_args()
     paths = [Path(p) for p in (args.csvs if args.csvs else RESULT_CSVS)]

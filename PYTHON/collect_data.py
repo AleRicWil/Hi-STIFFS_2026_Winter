@@ -1402,16 +1402,16 @@ if __name__ == "__main__":
         "Analog-to-Digital Converter: ADS1220, Mode: Turbo, Data Rate: DR_600SPS, Analog Excitation/Reference Voltage: 5.1V +/-2mV",
         "DAQ Microcontroller: Arduino Nano ESP32, Data-stream Connection: Wi-Fi"
     ]
-    run_collection( nano_id=[1],
-                    sensors=["A B C D E F"],
-                    sensor_sns=["113 114 115 104 105 106"],#["113 114 115"],
-                    probe_height_m=[0.855],
-                    header_content=[example_header_content],
-                    show_raw_strains=False,
-                    imu_mode_list=[False])
-    # run_collection( nano_id=[1, 2],
-    #                 sensors=["A B C", "A B C"],
-    #                 sensor_sns=["113 114 115", "104 105 106"],
-    #                 probe_height_m=[0.902, 0.941],
-    #                 header_content=[example_header_content, example_header_content],
-    #                 imu_mode_list=[True,False])
+    # run_collection( nano_id=[2],
+    #                 sensors=["A B C"],
+    #                 sensor_sns=["113 114 115"],#["113 114 115"],
+    #                 probe_height_m=[0.855],
+    #                 header_content=[example_header_content],
+    #                 show_raw_strains=False,
+    #                 imu_mode_list=[False])
+    run_collection( nano_id=[1, 2],
+                    sensors=["A B C", "A B C"],
+                    sensor_sns=["113 114 115", "104 105 106"],
+                    probe_height_m=[0.902, 0.941],
+                    header_content=[example_header_content, example_header_content],
+                    imu_mode_list=[True,False])
